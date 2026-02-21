@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="description" content="RG-69 browser beat machine">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>RG-69</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+  <style>
+    :root {
+      --bg: #121212;
+      --surface: #1b1b1b;
+      --surface-2: #242424;
+      --border: #343434;
+      --text: #e8e8e8;
+      --muted: #a1a1a1;
+      --accent: #d99742;
+      --accent-2: #f3b55a;
+      --danger: #c74848;
+      --ok: #58b26a;
+      --hit: #3f3528;
+      --play: #57442a;
+      --font: "IBM Plex Mono", ui-monospace, monospace;
+      --headline: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      min-height: 100%;
+    }
+
+    body {
+      padding: 30px;
+      line-height: 1.6;
+    }
+
+    .shell {
+      max-width: 1260px;
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+    }
+
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .title {
+      margin-bottom: 12px;
+    }
+
+    .hero-title {
+      margin: 0;
+      font-family: var(--headline);
+      font-size: clamp(42px, 9vw, 94px);
+      letter-spacing: 0.04em;
+      line-height: 0.92;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .hero-title .tm {
+      font-size: 0.18em;
+      vertical-align: super;
+      margin-left: 0.22em;
+      opacity: 0.78;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-top: 8px;
+    }
+
+    .btn {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface-2);
+      color: var(--text);
+      font: 600 14px/1 var(--font);
+      min-height: 66px;
+      min-width: 166px;
+      padding: 18px 22px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: 0.12s ease;
+    }
+
+    .btn:hover { border-color: var(--accent); }
+    .btn:active { transform: translateY(1px); }
+
+    .btn.primary {
+      background: var(--accent);
+      color: #18120b;
+      border-color: var(--accent);
+    }
+
+    .btn.danger {
+      background: color-mix(in srgb, var(--danger) 20%, var(--surface-2));
+      border-color: var(--danger);
+    }
+
+    .transport {
+      gap: 12px;
+      margin-bottom: 4px;
+    }
+
+    .knob-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 18px;
+      margin-top: 12px;
+    }
+
+    .knob {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+      text-align: center;
+    }
+
+    .knob label {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+
+    .knob .value {
+      font-size: 13px;
+      margin-top: 8px;
+      color: var(--accent-2);
+      font-weight: 600;
+    }
+
+    .knob input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 6px;
+      border-radius: 20px;
+      background: #303030;
+      outline: none;
+    }
+
+    .knob input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid #2b1e0f;
+      cursor: pointer;
+    }
+
+    .knob input[type="range"]::-moz-range-thumb {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid #2b1e0f;
+      cursor: pointer;
+    }
+
+    .grid-wrap {
+      overflow-x: auto;
+      padding-bottom: 6px;
+    }
+
+    .track {
+      margin-bottom: 12px;
+    }
+
+    .track-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+
+    .track-name {
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(16, minmax(28px, 1fr));
+      gap: 6px;
+      min-width: 620px;
+    }
+
+    .step {
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      border-radius: 8px;
+      min-height: 58px;
+      cursor: pointer;
+      transition: 0.08s ease;
+    }
+
+    .step.hit { background: var(--hit); }
+    .step.on { background: var(--accent); border-color: var(--accent); }
+    .step.playing { box-shadow: inset 0 0 0 2px var(--play); }
+
+    .workflow {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+    }
+
+    .wf {
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .wf b {
+      display: block;
+      color: var(--text);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 10px;
+    }
+
+    .terminal-head {
+      margin-top: 10px;
+      margin-bottom: 6px;
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .terminal {
+      min-height: 150px;
+      max-height: 240px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #0f0f0f;
+      padding: 8px 10px;
+      font-size: 11px;
+      line-height: 1.45;
+      color: #c8d0d4;
+    }
+
+    .terminal .entry {
+      display: block;
+      margin-bottom: 3px;
+    }
+
+    .terminal .entry b {
+      color: var(--accent-2);
+      font-weight: 500;
+    }
+
+    .welcome {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(18, 18, 18, 0.96);
+      z-index: 20;
+    }
+
+    .welcome-card {
+      width: min(560px, 94vw);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface);
+      padding: 24px;
+      text-align: center;
+      display: grid;
+      gap: 14px;
+    }
+
+    .welcome-card h2 {
+      margin: 0;
+      font-family: var(--headline);
+      font-size: 40px;
+      letter-spacing: 0.06em;
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+
+    .welcome-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 760px) {
+      body { padding: 12px; }
+      .btn { min-width: 132px; min-height: 58px; }
+      .steps { min-width: 560px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="welcome" id="welcome">
+    <div class="welcome-card">
+      <h2>RG-69</h2>
+      <p>Human-only instrument server. One instance only. Hard reset on every start.</p>
+      <button class="btn primary" id="startGate">Start Engine</button>
+      <p style="font-size:11px">This is an instrument system surface, not a chat UI.</p>
+    </div>
+  </div>
+
+  <div class="shell">
+    <section class="panel">
+      <div class="title">
+        <h1 class="hero-title">RG-69 <span class="tm">TM</span></h1>
+      </div>
+      <div class="status" id="status">idle</div>
+      <div class="row transport">
+        <button class="btn primary" id="playBtn">Play</button>
+        <button class="btn" id="stopBtn">Stop</button>
+        <button class="btn" id="randomBtn">Randomize</button>
+        <button class="btn danger" id="panicBtn">Kill Residual</button>
+      </div>
+      <div class="terminal-head">RG-69 System Trace</div>
+      <div class="terminal" id="log" aria-live="polite"></div>
+    </section>
+
+    <section class="panel">
+      <div class="title"><h1 style="font-size:14px">Performance Knobs</h1></div>
+      <div class="knob-grid">
+        <div class="knob">
+          <label for="bpm">BPM</label>
+          <input id="bpm" type="range" min="60" max="170" value="96">
+          <div class="value" id="bpmVal">96</div>
+        </div>
+        <div class="knob">
+          <label for="swing">Swing</label>
+          <input id="swing" type="range" min="0" max="80" value="28">
+          <div class="value" id="swingVal">28%</div>
+        </div>
+        <div class="knob">
+          <label for="drive">Drive</label>
+          <input id="drive" type="range" min="0" max="100" value="22">
+          <div class="value" id="driveVal">22%</div>
+        </div>
+        <div class="knob">
+          <label for="room">Room</label>
+          <input id="room" type="range" min="0" max="100" value="20">
+          <div class="value" id="roomVal">20%</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="title"><h1 style="font-size:14px">Step Grid</h1></div>
+      <div class="grid-wrap" id="sequencer"></div>
+    </section>
+
+    <section class="panel">
+      <div class="title"><h1 style="font-size:14px">Workflow</h1></div>
+      <div class="workflow">
+        <div class="wf"><b>Discover</b>Read current state and stale locks.</div>
+        <div class="wf"><b>Analyze</b>Check singleton ownership and transport state.</div>
+        <div class="wf"><b>Design</b>Apply clear controls and spacing hierarchy.</div>
+        <div class="wf"><b>Implement</b>Schedule playback with strict sequencing.</div>
+        <div class="wf"><b>Validate</b>Ensure one instance, no residual audio loops.</div>
+        <div class="wf"><b>Deliver</b>Stable interaction with low cognitive load.</div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    "use strict";
+
+    const MASTER_AXIOMS = Object.freeze({
+      clarity_over_cleverness: true,
+      one_instance_policy: true,
+      preserve_then_improve: true,
+      progressive_disclosure: true,
+      strong_feedback: true
+    });
+
+    const INSTANCE_KEY = "rg69_active_instance";
+    const INSTANCE_TTL_MS = 7000;
+    const instanceId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const channel = ("BroadcastChannel" in window) ? new BroadcastChannel("rg69-instance") : null;
+
+    const tracks = ["kick", "snare", "hat", "bass"];
+    const stepsPerBar = 16;
+    const state = {
+      started: false,
+      playing: false,
+      currentStep: -1,
+      eventId: null,
+      engine: null,
+      seq: {
+        kick: [1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0],
+        snare:[0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0],
+        hat:  [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0],
+        bass: [1,0,0,0,0,0,1,0,1,0,0,0,0,0,1,0]
+      },
+      stepElements: [] // Cache for step button DOM elements
+    };
+
+    const refs = {
+      welcome: document.getElementById("welcome"),
+      startGate: document.getElementById("startGate"),
+      status: document.getElementById("status"),
+      log: document.getElementById("log"),
+      playBtn: document.getElementById("playBtn"),
+      stopBtn: document.getElementById("stopBtn"),
+      randomBtn: document.getElementById("randomBtn"),
+      panicBtn: document.getElementById("panicBtn"),
+      bpm: document.getElementById("bpm"),
+      swing: document.getElementById("swing"),
+      drive: document.getElementById("drive"),
+      room: document.getElementById("room"),
+      bpmVal: document.getElementById("bpmVal"),
+      swingVal: document.getElementById("swingVal"),
+      driveVal: document.getElementById("driveVal"),
+      roomVal: document.getElementById("roomVal"),
+      sequencer: document.getElementById("sequencer")
+    };
+
+    function log(message, level = "info") {
+      const ts = new Date().toISOString().replace("T", " ").slice(11, 19);
+      const row = document.createElement("span");
+      row.className = `entry ${level}`;
+      const bold = document.createElement("b");
+      bold.textContent = ts;
+      row.appendChild(bold);
+      row.appendChild(document.createTextNode(` ${String(message)}`));
+      refs.log.appendChild(row);
+      while (refs.log.children.length > 80) refs.log.removeChild(refs.log.firstChild);
+      refs.log.scrollTop = refs.log.scrollHeight;
+    }
+
+    function setStatus(value) {
+      refs.status.textContent = value;
+    }
+
+    function ownerRecord() {
+      return { id: instanceId, ts: Date.now() };
+    }
+
+    function readOwner() {
+      try {
+        return JSON.parse(localStorage.getItem(INSTANCE_KEY) || "null");
+      } catch {
+        return null;
+      }
+    }
+
+    function claimInstance() {
+      const owner = readOwner();
+      if (owner && owner.id !== instanceId && (Date.now() - owner.ts) < INSTANCE_TTL_MS) {
+        channel?.postMessage({ type: "remote-stop", to: owner.id, from: instanceId });
+      }
+      localStorage.setItem(INSTANCE_KEY, JSON.stringify(ownerRecord()));
+      channel?.postMessage({ type: "claim", from: instanceId });
+    }
+
+    function heartbeatOwner() {
+      localStorage.setItem(INSTANCE_KEY, JSON.stringify(ownerRecord()));
+    }
+
+    function releaseInstance() {
+      const owner = readOwner();
+      if (owner && owner.id === instanceId) localStorage.removeItem(INSTANCE_KEY);
+    }
+
+    function stopPlayback(reason = "stopped") {
+      if (state.eventId !== null) {
+        Tone.Transport.clear(state.eventId);
+        state.eventId = null;
+      }
+      Tone.Transport.stop();
+      Tone.Transport.cancel();
+      state.playing = false;
+      state.currentStep = -1;
+      paintSteps();
+      setStatus(reason);
+    }
+
+    function hardResetAudio() {
+      try { stopPlayback("resetting"); } catch {}
+      if (state.engine) {
+        try { state.engine.kick.dispose(); } catch {}
+        try { state.engine.snare.dispose(); } catch {}
+        try { state.engine.hat.dispose(); } catch {}
+        try { state.engine.bass.dispose(); } catch {}
+        try { state.engine.drive.dispose(); } catch {}
+        try { state.engine.room.dispose(); } catch {}
+        try { state.engine.master.dispose(); } catch {}
+      }
+      state.engine = null;
+      log("Residual nodes killed.");
+    }
+
+    async function bootEngine() {
+      claimInstance();
+      hardResetAudio();
+
+      await Tone.start();
+      Tone.Transport.bpm.value = Number(refs.bpm.value);
+      Tone.Transport.swing = Number(refs.swing.value) / 100;
+
+      const master = new Tone.Gain(0.8).toDestination();
+      const drive = new Tone.Distortion(Number(refs.drive.value) / 100).connect(master);
+      const room = new Tone.FeedbackDelay("8n", Number(refs.room.value) / 100).connect(master);
+
+      const kick = new Tone.Player("https://tonejs.github.io/audio/drum-samples/CR78/kick.mp3").connect(drive);
+      const snare = new Tone.Player("https://tonejs.github.io/audio/drum-samples/CR78/snare.mp3").connect(drive);
+      const hat = new Tone.Player("https://tonejs.github.io/audio/drum-samples/CR78/hihat.mp3").connect(drive);
+
+      const bass = new Tone.Sampler({
+        urls: { C2: "C2.mp3", E2: "E2.mp3", G2: "G2.mp3" },
+        baseUrl: "https://tonejs.github.io/audio/salamander/"
+      }).connect(room);
+
+      const keys = new Tone.Sampler({
+        urls: { C3: "C3.mp3", E3: "E3.mp3", G3: "G3.mp3", C4: "C4.mp3" },
+        baseUrl: "https://tonejs.github.io/audio/salamander/"
+      }).connect(room);
+
+      await Tone.loaded();
+      state.engine = { master, drive, room, kick, snare, hat, bass, keys };
+      state.started = true;
+      setStatus("ready");
+      log("Engine booted with singleton lock and sampled instruments.", "ok");
+    }
+
+    function scheduleTransport() {
+      if (!state.engine) return;
+      if (state.eventId !== null) Tone.Transport.clear(state.eventId);
+
+      let i = 0;
+      state.eventId = Tone.Transport.scheduleRepeat((time) => {
+        const step = i % stepsPerBar;
+        state.currentStep = step;
+
+        if (state.seq.kick[step]) state.engine.kick.start(time);
+        if (state.seq.snare[step]) state.engine.snare.start(time);
+        if (state.seq.hat[step]) state.engine.hat.start(time);
+        if (state.seq.bass[step]) state.engine.bass.triggerAttackRelease("C2", "8n", time, 0.7);
+        if (step % 4 === 0) state.engine.keys.triggerAttackRelease(["C3", "E3", "G3"], "4n", time, 0.45);
+
+        paintSteps();
+        i += 1;
+      }, "16n");
+    }
+
+    async function startPlayback() {
+      if (!state.started) await bootEngine();
+      claimInstance();
+      scheduleTransport();
+      Tone.Transport.start("+0.02");
+      state.playing = true;
+      setStatus("playing");
+      log("Playing. One RG-69 instance enforced.");
+    }
+
+    function randomize() {
+      tracks.forEach((track) => {
+        state.seq[track] = state.seq[track].map(() => (Math.random() > 0.62 ? 1 : 0));
+      });
+      paintSteps();
+      log("Pattern randomized.");
+    }
+
+    function paintSteps() {
+      // Use cached step elements instead of querySelectorAll
+      for (const el of state.stepElements) {
+        const track = el.dataset.track;
+        const step = Number(el.dataset.step);
+        el.classList.toggle("on", Boolean(state.seq[track][step]));
+        el.classList.toggle("hit", !state.seq[track][step]);
+        el.classList.toggle("playing", step === state.currentStep);
+      }
+    }
+
+    function buildGrid() {
+      refs.sequencer.innerHTML = "";
+      state.stepElements = []; // Clear cache
+      
+      // Use event delegation: single listener on sequencer
+      const handleStepClick = (e) => {
+        const btn = e.target.closest(".step");
+        if (!btn) return;
+        const track = btn.dataset.track;
+        const step = Number(btn.dataset.step);
+        state.seq[track][step] = state.seq[track][step] ? 0 : 1;
+        paintSteps();
+      };
+      
+      // Remove old listener if exists
+      if (refs.sequencer._stepClickHandler) {
+        refs.sequencer.removeEventListener("click", refs.sequencer._stepClickHandler);
+      }
+      refs.sequencer._stepClickHandler = handleStepClick;
+      refs.sequencer.addEventListener("click", handleStepClick);
+      
+      tracks.forEach((track) => {
+        const row = document.createElement("div");
+        row.className = "track";
+
+        const head = document.createElement("div");
+        head.className = "track-head";
+        head.innerHTML = `<div class="track-name">${track}</div>`;
+        row.appendChild(head);
+
+        const steps = document.createElement("div");
+        steps.className = "steps";
+
+        for (let i = 0; i < stepsPerBar; i += 1) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "step";
+          btn.dataset.track = track;
+          btn.dataset.step = String(i);
+          steps.appendChild(btn);
+          state.stepElements.push(btn); // Cache reference
+        }
+
+        row.appendChild(steps);
+        refs.sequencer.appendChild(row);
+      });
+
+      paintSteps();
+    }
+
+    function bindKnobs() {
+      const map = [
+        [refs.bpm, refs.bpmVal, (v) => `${v}`],
+        [refs.swing, refs.swingVal, (v) => `${v}%`],
+        [refs.drive, refs.driveVal, (v) => `${v}%`],
+        [refs.room, refs.roomVal, (v) => `${v}%`]
+      ];
+
+      map.forEach(([input, out, fmt]) => {
+        input.addEventListener("input", () => {
+          const v = Number(input.value);
+          out.textContent = fmt(v);
+          if (!state.engine) return;
+          if (input === refs.bpm) Tone.Transport.bpm.value = v;
+          if (input === refs.swing) Tone.Transport.swing = v / 100;
+          if (input === refs.drive) state.engine.drive.distortion = v / 100;
+          if (input === refs.room) state.engine.room.feedback.value = v / 100;
+        });
+      });
+    }
+
+    function installInstanceGuards() {
+      window.addEventListener("beforeunload", releaseInstance);
+
+      channel?.addEventListener("message", (ev) => {
+        const msg = ev.data || {};
+        if (msg.type === "claim" && msg.from !== instanceId && state.playing) {
+          stopPlayback("stopped by other tab");
+          log("Another RG-69 tab claimed playback. This tab stopped.");
+        }
+        if (msg.type === "remote-stop" && msg.to === instanceId) {
+          stopPlayback("remote stop");
+          hardResetAudio();
+        }
+      });
+
+      window.addEventListener("storage", (ev) => {
+        if (ev.key !== INSTANCE_KEY) return;
+        const owner = readOwner();
+        if (owner && owner.id !== instanceId && state.playing) {
+          stopPlayback("instance handoff");
+        }
+      });
+
+      setInterval(() => {
+        const owner = readOwner();
+        if (state.playing && (!owner || owner.id === instanceId)) heartbeatOwner();
+        if (state.playing && owner && owner.id !== instanceId && (Date.now() - owner.ts) < INSTANCE_TTL_MS) {
+          stopPlayback("lost ownership");
+        }
+      }, 2000);
+    }
+
+    refs.startGate.addEventListener("click", async () => {
+      refs.welcome.style.display = "none";
+      await bootEngine();
+    });
+
+    refs.playBtn.addEventListener("click", async () => {
+      if (state.playing) {
+        stopPlayback("paused");
+      } else {
+        await startPlayback();
+      }
+    });
+
+    refs.stopBtn.addEventListener("click", () => stopPlayback("stopped"));
+    refs.randomBtn.addEventListener("click", randomize);
+    refs.panicBtn.addEventListener("click", () => {
+      stopPlayback("panic");
+      hardResetAudio();
+      releaseInstance();
+      setStatus("panic reset");
+    });
+
+    buildGrid();
+    bindKnobs();
+    installInstanceGuards();
+  </script>
+</body>
+</html>

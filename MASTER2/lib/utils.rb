@@ -1,9 +1,20 @@
 # frozen_string_literal: true
 
 module MASTER
-  # Utils - Shared utility methods (DRY)
   module Utils
     module_function
+
+    def monotonic_now
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def valid_ruby?(code)
+      # NOTE: CRuby-specific (RubyVM::InstructionSequence). Will raise on JRuby/TruffleRuby.
+      RubyVM::InstructionSequence.compile(code)
+      true
+    rescue SyntaxError
+      false
+    end
 
     def levenshtein(a, b)
       return b.length if a.empty?
@@ -29,6 +40,13 @@ module MASTER
 
       max_len = [a.length, b.length].max
       1.0 - (levenshtein(a, b).to_f / max_len)
+    end
+
+    # Format token count (k/M notation) - ONE_SOURCE
+    def format_tokens(n)
+      return "#{n}" if n < 1000
+      return "#{(n / 1000.0).round(1)}k" if n < 1_000_000
+      "#{(n / 1_000_000.0).round(1)}M"
     end
   end
 end

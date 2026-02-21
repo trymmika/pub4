@@ -1,16 +1,162 @@
 # frozen_string_literal: true
 
+require_relative "commands/session_commands"
+require_relative "commands/model_commands"
+require_relative "commands/budget_commands"
+require_relative "commands/code_commands"
+require_relative "commands/chat_commands"
+require_relative "commands/misc_commands"
+require_relative "commands/refactor_helpers"
+require_relative "commands/workflow_commands"
+require_relative "commands/system_commands"
+
 module MASTER
   # Commands - REPL command dispatcher
   module Commands
     extend self
+    include SessionCommands
+    include ModelCommands
+    include BudgetCommands
+    include CodeCommands
+    include ChatCommands
+    include MiscCommands
+    include RefactorHelpers
+    include WorkflowCommands
+    include SystemCommands
 
     @last_command = nil
+
+    # Replicate command handler (repligen kept as alias)
+    def replicate_command(cmd, args)
+      case cmd
+      when "replicate", "repligen", "generate-image"
+        return puts "Usage: replicate <prompt>" if args.nil? || args.empty?
+        result = ReplicateBridge.generate_image(prompt: args)
+        if result.ok?
+          puts "+ image: #{result.value[:urls]&.first || result.value}"
+        else
+          $stderr.puts "- #{result.error}"
+        end
+      when "generate-video"
+        return puts "Usage: generate-video <prompt>" if args.nil? || args.empty?
+        result = ReplicateBridge.generate_video(prompt: args)
+        if result.ok?
+          puts "+ video: #{result.value[:urls]&.first || result.value}"
+        else
+          $stderr.puts "- #{result.error}"
+        end
+      end
+    rescue StandardError => e
+      $stderr.puts "replicate: #{e.message}"
+    end
+
+    # Narrate command handler
+    def narrate_command(args)
+      return Result.err("REPLICATE_API_TOKEN not set") unless Replicate.available?
+      return Result.err("narration module not loaded") unless defined?(MASTER::Replicate::Narration)
+
+      selected_segments = parse_segment_selection(args)
+      return selected_segments if selected_segments.err?
+
+      result = MASTER::Replicate::Narration.generate_narration(segments: selected_segments.value)
+      print_narration_results(result) if result.ok?
+      result
+    rescue StandardError => e
+      $stderr.puts "narrate: #{e.message}"
+      Result.err(e.message)
+    end
+
+    def parse_segment_selection(args)
+      return Result.ok(nil) unless args&.include?("--segments")
+
+      parts = args.split("--segments", 2)
+      return Result.ok(nil) if parts.size <= 1
+
+      segment_ids = parts[1].strip.split(",").map { |s| s.strip.to_sym }
+      all_segments = MASTER::Replicate::Narration::NARRATION_SEGMENTS
+      selected = all_segments.select { |seg| segment_ids.include?(seg[:id]) }
+
+      return Result.err("no matching segments") if selected.empty?
+      Result.ok(selected)
+    end
+
+    def print_narration_results(result)
+      result.value[:segments].each { |seg| puts "+ narrate: #{seg[:id]} completed" }
+    end
+
+    # PostPro command handler
+    def postpro_command(cmd, args)
+      case cmd
+      when "postpro"
+        if args.nil? || args.empty?
+          puts "Operations:"
+          PostproBridge.operations.each { |op| puts "  #{op[:id]} - #{op[:name]}" }
+          puts "\nPresets:"
+          puts PostproBridge.list_presets
+          puts "\nStocks:"
+          puts PostproBridge.list_stocks
+          puts "\nLenses:"
+          puts PostproBridge.list_lenses
+          return
+        end
+        parts = args.split(/\s+/, 2)
+        operation = parts[0]
+        target = parts[1]
+
+        # Check if it's a preset name
+        if PostproBridge::PRESETS.key?(operation.to_sym) && target
+          result = PostproBridge.apply_preset(target, preset: operation.to_sym)
+          if result.ok?
+            puts "+ #{operation}: #{result.value}"
+          else
+            $stderr.puts "- #{result.error}"
+          end
+        elsif target
+          result = PostproBridge.enhance(image_url: target, operation: operation)
+          if result.ok?
+            puts "+ #{operation}: #{result.value[:urls]&.first || result.value}"
+          else
+            $stderr.puts "- #{result.error}"
+          end
+        else
+          puts "Usage: postpro <operation|preset> <path|url>"
+        end
+      when "enhance", "upscale"
+        return puts "Usage: #{cmd} <image_url>" if args.nil? || args.empty?
+        result = cmd == "upscale" ?
+          PostproBridge.upscale(image_url: args) :
+          PostproBridge.enhance(image_url: args, operation: :upscale)
+        if result.ok?
+          puts "+ #{result.value[:urls]&.first || result.value}"
+        else
+          $stderr.puts "- #{result.error}"
+        end
+      end
+    rescue StandardError => e
+      $stderr.puts "postpro: #{e.message}"
+    end
+
+    # Fuzzy match for command suggestions (moved from Onboarding)
+    def suggest_command(input)
+      commands = CommandRegistry.primary_commands
+      word = input.strip.split.first&.downcase
+      return nil unless word && word.length > 2
+
+      commands.find { |c| Utils.levenshtein(word, c) <= 1 }
+    end
+
+    def show_did_you_mean(input)
+      suggestion = suggest_command(input)
+      return false unless suggestion
+
+      puts UI.dim("  Did you mean: #{suggestion}?")
+      true
+    end
 
     # Shortcuts for power users
     SHORTCUTS = {
       "!!" => :repeat_last,
-      "!r" => "refactor",
+      "!r" => "autofix",
       "!c" => "chamber",
       "!e" => "evolve",
       "!s" => "status",
@@ -18,18 +164,124 @@ module MASTER
       "!h" => "help",
     }.freeze
 
+    # Command routing table: command => [method_name, returns_handled?]
+    # If returns_handled is true, wraps result in HANDLED constant
+    # If false, returns method result directly (may be Result, :exit, or nil)
+    COMMAND_TABLE = {
+      "help" => [:show_help, true],
+      "?" => [:show_help, true],
+      "hunt" => [:hunt_bugs, true],
+      "critique" => [:critique_code, true],
+      "conflict" => [:detect_conflicts, true],
+      "learn" => [:show_learnings, true],
+      "status" => [:show_status, true],
+      "budget" => [:print_budget, true],
+      "clear" => [:clear_screen, true],
+      "history" => [:print_cost_history, true],
+      "context" => [:print_context_usage, true],
+      "session" => [:manage_session, true],
+      "sessions" => [:print_saved_sessions, true],
+      "forget" => [:undo_last_exchange, true],
+      "undo" => [:undo_last_exchange, true],
+      "summary" => [:print_session_summary, true],
+      "health" => [:print_health, true],
+      "doctor" => [:doctor, true],
+      "bootstrap" => [:bootstrap, true],
+      "history-dig" => [:history_dig, true],
+      "codify" => [:codify, true],
+      "axioms-stats" => [:print_axiom_stats, true],
+      "stats" => [:print_axiom_stats, true],
+      "refactor" => [:autofix, false],
+      "autofix" => [:autofix, false],
+      "chamber" => [:chamber, false],
+      "evolve" => [:evolve, false],
+      "opportunities" => [:opportunities, false],
+      "opps" => [:opportunities, false],
+      "axioms" => [:print_language_axioms, true],
+      "language-axioms" => [:print_language_axioms, true],
+      "self" => [:selftest_full, false],
+      "selftest" => [:selftest_full, false],
+      "self-test" => [:selftest_full, false],
+      "selfrun" => [:selftest_full, false],
+      "self-run" => [:selftest_full, false],
+      "web" => [:start_web_server, true],
+      "server" => [:start_web_server, true],
+      "speak" => [:speak, true],
+      "say" => [:speak, true],
+      "fix" => [:fix_code, true],
+      "browse" => [:browse_url, true],
+      "chat" => [:enter_chat_mode, true],
+      "ideate" => [:ideate, false],
+      "brainstorm" => [:ideate, false],
+      "model" => [:select_model, true],
+      "use" => [:select_model, true],
+      "models" => [:list_models, true],
+      "pattern" => [:select_pattern, true],
+      "mode" => [:select_pattern, true],
+      "patterns" => [:list_patterns, true],
+      "modes" => [:list_patterns, true],
+      "persona" => [:manage_persona, true],
+      "personas" => [:list_personas, true],
+      "workflow" => [:manage_workflow, true],
+      "creative" => [:creative_chamber, true],
+      "scan" => [:scan_code, true],
+      "queue" => [:manage_queue, true],
+      "harvest" => [:harvest_data, true],
+      "capture" => [:session_capture, true],
+      "session-capture" => [:session_capture, true],
+      "review-captures" => [:review_captures, true],
+      "replicate" => [:handle_replicate, true],
+      "repligen" => [:handle_replicate, true],
+      "generate-image" => [:handle_replicate, true],
+      "generate-video" => [:handle_replicate, true],
+      "postpro" => [:handle_postpro, true],
+      "enhance" => [:handle_postpro, true],
+      "upscale" => [:handle_postpro, true],
+      "cache" => [:show_cache_stats, true],
+      "style-guides" => [:style_guides, true],
+      "styleguides" => [:style_guides, true],
+      "multi-refactor" => [:multi_refactor, false],
+      "mrefactor" => [:multi_refactor, false],
+      "shell" => [:start_shell, true],
+      "exit" => [:exit_repl, false],
+      "quit" => [:exit_repl, false],
+    }.freeze
+
+    HANDLED = Result.ok({ handled: true }).freeze
+
     def dispatch(input, pipeline:)
+      return Result.err("No previous command to repeat.") if input.nil?
+
+      # Split compound prompts into sequenced requests.
+      requests = split_requests(input)
+      return Result.err("Empty command.") if requests.empty?
+      return dispatch_one(requests.first, pipeline: pipeline) if requests.size <= 1
+
+      puts UI.dim("multi-intent: #{requests.size} items queued")
+      results = []
+
+      requests.each_with_index do |request, idx|
+        puts UI.dim("  [#{idx + 1}/#{requests.size}] #{request}")
+        result = dispatch_one(request, pipeline: pipeline)
+        results << { request: request, result: result }
+        break if result == :exit
+      end
+
+      Result.ok({ handled: true, multi_intent: true, items: results.size, results: results })
+    end
+
+    def dispatch_one(input, pipeline:)
       # Handle shortcuts
       if input.strip == "!!"
-        return Result.err("No previous command") unless @last_command
+        return Result.err("No previous command.") unless @last_command
         input = @last_command
       elsif (shortcut = SHORTCUTS[input.strip])
         input = shortcut.is_a?(Symbol) ? @last_command : shortcut
       end
 
-      # Guard against nil after shortcut resolution
       return Result.err("No previous command to repeat.") if input.nil?
 
+      input = normalize_intent_input(input)
       @last_command = input unless input.to_s.start_with?("!")
 
       parts = input.strip.split(/\s+/, 2)
@@ -39,42 +291,66 @@ module MASTER
       case cmd
       when "help", "?"
         Help.show(args)
-        nil
+        HANDLED
+      when "hunt"
+        hunt_bugs(args)
+        HANDLED
+      when "critique"
+        critique_code(args)
+        HANDLED
+      when "conflict"
+        detect_conflicts
+        HANDLED
+      when "learn"
+        show_learnings(args)
+        HANDLED
       when "status"
         Dashboard.new.render
-        nil
+        HANDLED
       when "budget"
         print_budget
-        nil
+        HANDLED
       when "clear"
         print "\e[2J\e[H"
-        nil
+        HANDLED
       when "history"
         print_cost_history
-        nil
+        HANDLED
       when "context"
         print_context_usage
-        nil
+        HANDLED
       when "session"
         manage_session(args)
-        nil
+        HANDLED
       when "sessions"
         print_saved_sessions
-        nil
+        HANDLED
       when "forget", "undo"
         undo_last_exchange
-        nil
+        HANDLED
       when "summary"
         print_session_summary
-        nil
+        HANDLED
       when "health"
         print_health
-        nil
+        HANDLED
+      when "doctor"
+        doctor(args)
+        HANDLED
+      when "bootstrap"
+        bootstrap(args)
+        HANDLED
+      when "history-dig"
+        history_dig(args)
+        HANDLED
+      when "codify"
+        codify(args)
+        HANDLED
       when "axioms-stats", "stats"
         print_axiom_stats
-        nil
-      when "refactor"
-        refactor(args)
+        HANDLED
+      when "refactor", "autofix"
+        autofix(args)
       when "chamber"
         chamber(args)
       when "evolve"
@@ -83,534 +359,152 @@ module MASTER
         opportunities(args)
       when "axioms", "language-axioms"
         print_language_axioms(args)
-        nil
-      when "selftest", "self-test", "selfrun", "self-run"
-        SelfTest.run
+        HANDLED
+      when "self", "selftest", "self-test", "selfrun", "self-run"
+        selftest_full(args)
+      when "web", "server"
+        start_web_server(args)
+        HANDLED
       when "speak", "say"
         speak(args)
-        nil
+        HANDLED
       when "fix"
         fix_code(args)
-        nil
+        HANDLED
       when "browse"
         browse_url(args)
-        nil
+        HANDLED
+      when "chat"
+        enter_chat_mode(args)
+        HANDLED
       when "ideate", "brainstorm"
         ideate(args)
       when "model", "use"
         select_model(args)
-        nil
+        HANDLED
       when "models"
         list_models
-        nil
+        HANDLED
       when "pattern", "mode"
         select_pattern(args)
-        nil
+        HANDLED
       when "patterns", "modes"
         list_patterns
-        nil
+        HANDLED
+      when "persona"
+        manage_persona(args)
+        HANDLED
+      when "personas"
+        list_personas
+        HANDLED
+      when "workflow"
+        manage_workflow(args)
+        HANDLED
+      when "creative"
+        creative_chamber(args)
+        HANDLED
+      when "scan"
+        scan_code(args)
+        HANDLED
+      when "queue"
+        manage_queue(args)
+        HANDLED
+      when "harvest"
+        harvest_data(args)
+        HANDLED
+      when "capture", "session-capture"
+        session_capture
+        HANDLED
+      when "review-captures"
+        review_captures
+        HANDLED
+      when "replicate", "repligen", "generate-image", "generate-video"
+        replicate_command(cmd, args)
+        HANDLED
+      when "narrate", "narration"
+        narrate_command(args)
+        HANDLED
+      when "postpro", "enhance", "upscale"
+        postpro_command(cmd, args)
+        HANDLED
+      when "cache"
+        show_cache_stats(args)
+        HANDLED
+      when "style-guides", "styleguides"
+        style_guides(args)
+        HANDLED
+      when "multi-refactor", "mrefactor"
+        multi_refactor(args)
+      when "schedule"
+        manage_schedule(args)
+      when "heartbeat"
+        manage_heartbeat(args)
+      when "policy"
+        manage_policy(args)
+      when "shell"
+        InteractiveShell.new.run
+        HANDLED
       when "exit", "quit"
         :exit
       else
-        pipeline.call({ text: input })
+        nil
       end
     end
 
-    class << self
-      private
+    # Wrapper methods for command table routing
+    def show_help(args) = Help.show(args)
+    def show_status(_args) = Dashboard.new.render
+    def clear_screen(_args) = print("\e[2J\e[H")
+    def handle_replicate(args) = replicate_command(@last_cmd || "replicate", args)
+    def handle_postpro(args) = postpro_command(@last_cmd || "postpro", args)
+    def start_shell(_args) = InteractiveShell.new.run
+    def exit_repl(_args) = :exit
 
-      def fix_code(args)
-        path = args&.strip
-        if path.nil? || path.empty?
-          path = "."
-        end
+    private
 
-        if File.directory?(path)
-          fixer = AutoFixer.new(mode: :moderate)
-          result = fixer.fix_directory(path)
-          if result.ok?
-            puts "\n  ✓ Fixed #{result.value[:total_fixes]} issues in #{result.value[:files_fixed]} files\n"
-          else
-            UI.error(result.error)
-          end
-        elsif File.exist?(path)
-          fixer = AutoFixer.new(mode: :moderate)
-          result = fixer.fix(path)
-          if result.ok?
-            puts "\n  ✓ Fixed #{result.value[:fixed]} issues in #{path}\n"
-          else
-            UI.error(result.error)
-          end
-        else
-          UI.error("Path not found: #{path}")
-        end
+    def split_requests(input)
+      raw = input.to_s.strip
+      return [] if raw.empty?
+
+      chunks = raw
+        .gsub("\r", "\n")
+        .split(/\n+/)
+        .flat_map { |line| line.split(/\s*;\s*/) }
+        .map { |item| item.sub(/\A\s*(?:[-*]|\d+[.)])\s*/, "").strip }
+        .reject(&:empty?)
+
+      return chunks if chunks.size > 1
+
+      qsplit = raw.split(/\?\s+/).map(&:strip).reject(&:empty?)
+      if qsplit.size > 1
+        return qsplit.map { |q| q.end_with?("?") ? q : "#{q}?" }
       end
 
-      def browse_url(args)
-        url = args&.strip
-        if url.nil? || url.empty?
-          puts "\n  Usage: browse <url>\n"
-          return
-        end
+      [raw]
+    end
 
-        url = "https://#{url}" unless url.start_with?("http")
-        result = Web.browse(url)
-        
-        if result.ok?
-          puts "\n#{result.value[:content]}\n"
-        else
-          UI.error(result.error)
-        end
+    def normalize_intent_input(input)
+      text = input.to_s.strip
+      lowered = text.downcase
+      return text if lowered.empty?
+
+      # Natural-language self-refactor requests
+      if lowered.match?(/\b(self[\s-]?run|run .* through itself|refactor .* every|rewrite .* every|all files|entire repo|codebase)\b/)
+        return "selfrun --strict --axioms --all-files" if lowered.match?(/\b(strict|axiom|every|all|entire|iterative|loop|diminishing)\b/)
+        return "selfrun"
       end
 
-      def ideate(args)
-        prompt = args&.strip
-        if prompt.nil? || prompt.empty?
-          puts "\n  Usage: ideate <topic or problem>\n"
-          return nil
-        end
-
-        chamber = Chamber.new(llm: LLM)
-        result = chamber.ideate(prompt: prompt)
-        
-        if result.ok?
-          data = result.value
-          puts "\n  Ideas:"
-          data[:ideas].first(5).each { |i| puts "    • #{i[0..80]}" }
-          puts "\n  Synthesis:"
-          puts "    #{data[:final][0..500]}..."
-          puts "\n  Cost: #{UI.currency(data[:cost])}\n"
-        end
-        result
+      # Natural-language lint/scan requests
+      if lowered.match?(/\b(lint|validate|syntax check|scan)\b/) &&
+         lowered.match?(/\b(html|erb|css|javascript|js|rust|yaml|yml|all files|repo)\b/)
+        return "multi-refactor . --strict --axioms --all-files"
       end
 
-      def select_model(args)
-        unless args && !args.strip.empty?
-          puts "\n  Current model: #{LLM.current_model || 'auto'}"
-          puts "  Current tier:  #{LLM.current_tier || LLM.tier}"
-          puts "  Use 'model <name>' to switch, 'models' to list.\n"
-          return
-        end
+      # Health/status phrasing
+      return "health" if lowered.match?(/\b(health|diagnostic|doctor|check setup)\b/)
+      return "status" if lowered.match?(/\b(status|where are we|summary)\b/)
 
-        query = args.strip.downcase
-        found = LLM.models.find { |m| m[:id].downcase.include?(query) || m[:name]&.downcase&.include?(query) }
-
-        if found
-          LLM.current_model = LLM.extract_model_name(found[:id])
-          LLM.current_tier = found[:tier]&.to_sym || :fast
-          puts "\n  ✓ Switched to #{found[:id]} (#{found[:tier]})\n"
-        else
-          puts "\n  ✗ No model matching '#{args}' found."
-          puts "  Use 'models' to list available models.\n"
-        end
-      end
-
-      def list_models
-        UI.header("Available Models")
-        LLM::TIER_ORDER.each do |tier|
-          models = LLM.model_tiers[tier]
-          next if models.nil? || models.empty?
-          puts "  #{tier}:"
-          models.each do |m|
-            status = LLM.circuit_closed?(m) ? "✓" : "✗"
-            short = m.split("/").last[0, 30]
-            puts "    #{status} #{short}"
-          end
-        end
-        puts
-      end
-
-      def select_pattern(args)
-        unless args && !args.strip.empty?
-          current = Pipeline.current_pattern rescue :auto
-          puts "\n  Current pattern: #{current}"
-          puts "  Available: #{Executor::PATTERNS.join(', ')}, auto"
-          puts "  Use 'pattern <name>' to switch.\n"
-          return
-        end
-
-        pattern = args.strip.downcase.to_sym
-        if pattern == :auto || Executor::PATTERNS.include?(pattern)
-          Pipeline.current_pattern = pattern
-          puts "\n  ✓ Pattern set to: #{pattern}\n"
-        else
-          puts "\n  ✗ Unknown pattern '#{args}'."
-          puts "  Available: #{Executor::PATTERNS.join(', ')}, auto\n"
-        end
-      end
-
-      def list_patterns
-        UI.header("Executor Patterns")
-        patterns = {
-          react: "Tight thought-action-observation loop. Best for exploration.",
-          pre_act: "Plan first, then execute. Best for multi-step tasks (70% better recall).",
-          rewoo: "Batch reasoning upfront. Best for cost-sensitive tasks.",
-          reflexion: "Self-critique and retry. Best for fixing/debugging.",
-          auto: "Auto-select based on task characteristics (default)."
-        }
-        
-        current = Pipeline.current_pattern rescue :auto
-        patterns.each do |name, desc|
-          marker = name == current ? "▸" : " "
-          puts "  #{marker} #{name.to_s.ljust(10)} #{desc}"
-        end
-        puts
-      end
-
-      def print_budget
-        tier = LLM.tier
-        remaining = LLM.budget_remaining
-        spent = LLM::SPENDING_CAP - remaining
-        pct = (spent / LLM::SPENDING_CAP * 100).round(1)
-
-        UI.header("Budget Status")
-        puts "  Tier:      #{tier}"
-        puts "  Remaining: #{UI.currency(remaining)}"
-        puts "  Spent:     #{UI.currency(spent)} (#{pct}%)"
-        puts
-      end
-
-      def print_context_usage
-        session = Session.current
-        u = ContextWindow.usage(session)
-
-        UI.header("Context Window")
-        puts "  #{ContextWindow.bar(session)}"
-        puts "  Used:      #{humanize_tokens(u[:used])}"
-        puts "  Limit:     #{humanize_tokens(u[:limit])}"
-        puts "  Remaining: #{humanize_tokens(u[:remaining])}"
-        puts "  Messages:  #{session.message_count}"
-        puts
-      end
-
-      def humanize_tokens(n)
-        n >= 1000 ? "#{(n / 1000.0).round(1)}k" : n.to_s
-      end
-
-      def print_cost_history
-        costs = DB.recent_costs(limit: 10)
-
-        if costs.empty?
-          puts "\n  No history yet.\n"
-        else
-          UI.header("Recent Queries", width: 50)
-          costs.each do |row|
-            model = row[:model].split("/").last[0, 12]
-            tokens_in = row[:tokens_in]
-            tokens_out = row[:tokens_out]
-            cost = row[:cost]
-            created = row[:created_at]
-            puts "  #{created[0, 16]} | #{model.ljust(12)} | #{tokens_in}→#{tokens_out} | #{UI.currency_precise(cost)}"
-          end
-          puts
-        end
-      end
-
-      def refactor(args)
-        return Result.err("Usage: refactor <file> [--preview|--raw|--apply]") unless args
-
-        parts = args.strip.split(/\s+/)
-        return Result.err("Usage: refactor <file> [--preview|--raw|--apply]") if parts.empty?
-        
-        file = parts.first
-        
-        # Check if the first argument looks like a flag
-        if file&.start_with?("--")
-          return Result.err("Usage: refactor <file> [--preview|--raw|--apply]")
-        end
-        
-        mode = extract_mode(parts[1..-1])
-
-        return Result.err("File path cannot be empty") if file.nil? || file.empty?
-        
-        path = File.expand_path(file)
-        return Result.err("File not found: #{file}") unless File.exist?(path)
-
-        original_code = File.read(path)
-        chamber = Chamber.new
-        result = chamber.deliberate(original_code, filename: File.basename(path))
-
-        return result unless result.ok? && result.value[:final]
-
-        proposed_code = result.value[:final]
-        council_info = result.value[:council]
-
-        # Pass through lint + render stages for governance
-        linted = lint_output(proposed_code)
-        rendered = render_output(linted)
-
-        # Format output based on mode
-        case mode
-        when :raw
-          display_raw_output(result, rendered, council_info)
-        when :apply
-          apply_refactor(path, original_code, rendered, result, council_info)
-        else # :preview (default)
-          display_preview(path, original_code, rendered, result, council_info)
-        end
-
-        result
-      end
-
-      def chamber(file)
-        refactor(file)
-      end
-
-      def evolve(path)
-        path ||= MASTER.root
-        evolver = Evolve.new
-        result = evolver.run(path: path, dry_run: true)
-
-        UI.header("Evolution Analysis (dry run)")
-        puts "  Files processed: #{result[:files_processed]}"
-        puts "  Improvements found: #{result[:improvements]}"
-        puts "  Cost: #{UI.currency_precise(result[:cost])}"
-        puts
-
-        Result.ok(result)
-      end
-
-      def speak(text)
-        return puts "  Usage: speak <text>" unless text
-
-        result = Speech.speak(text)
-        puts "  TTS Error: #{result.error}" if result.err?
-      end
-
-      def manage_session(args)
-        case args&.split&.first
-        when "new"
-          Session.start_new
-          puts "  New session: #{UI.truncate_id(Session.current.id)}"
-        when "save"
-          Session.current.save
-          puts "  Session saved: #{UI.truncate_id(Session.current.id)}"
-        when "load", "resume"
-          id = args.split[1]
-          if id && Session.resume(id)
-            puts "  Resumed session: #{UI.truncate_id(Session.current.id)}"
-          else
-            puts "  Session not found: #{id}"
-          end
-        when "info"
-          s = Session.current
-          UI.header("Session Info")
-          puts "  ID:       #{s.id}"
-          puts "  Messages: #{s.message_count}"
-          puts "  Cost:     #{UI.currency_precise(s.total_cost)}"
-          puts "  Created:  #{s.created_at}"
-          puts
-        else
-          puts "  Usage: session [new|save|load <id>|info]"
-        end
-      end
-
-      def print_saved_sessions
-        sessions = Session.list
-        if sessions.empty?
-          puts "\n  No saved sessions.\n"
-        else
-          UI.header("Saved Sessions")
-          sessions.each do |id|
-            data = Memory.load_session(id)
-            next unless data
-
-            msgs = data[:history]&.size || 0
-            puts "  #{UI.truncate_id(id)} | #{msgs} messages"
-          end
-          puts
-        end
-      end
-
-      def undo_last_exchange
-        session = Session.current
-        if session.history.size < 2
-          puts "  Nothing to forget."
-          return
-        end
-
-        # IMMUTABLE_HISTORY: append tombstone instead of mutating
-        session.history << { role: :system, content: "[UNDO: Previous 2 messages hidden]", tombstone: true, undone_at: Time.now.utc.iso8601 }
-        session.instance_variable_set(:@undo_count, (session.instance_variable_get(:@undo_count) || 0) + 1)
-        session.instance_variable_set(:@dirty, true)
-        puts "  Marked last exchange as undone. Context preserved for history."
-      end
-
-      def print_session_summary
-        session = Session.current
-        if session.history.empty?
-          puts "  No conversation yet."
-          return
-        end
-
-        UI.header("Conversation Summary")
-        puts "  Messages: #{session.message_count}"
-        puts "  Cost:     #{UI.currency_precise(session.total_cost)}"
-        puts
-
-        history = session.history
-        puts "  First message: #{truncate(history.first[:content], 60)}"
-        puts "  Last message:  #{truncate(history.last[:content], 60)}" if history.size > 1
-        puts
-      end
-
-      def truncate(str, max)
-        return str if str.length <= max
-        "#{str[0, max - 3]}..."
-      end
-
-      def print_health
-        UI.header("Health Check")
-        checks = []
-
-        # Check API key
-        api_key = ENV.fetch("OPENROUTER_API_KEY", nil)
-        checks << { name: "API Key", ok: !api_key.nil? && !api_key.empty? }
-
-        # Check var directory writable
-        var_ok = File.writable?(Paths.var) rescue false
-        checks << { name: "Var writable", ok: var_ok }
-
-        # Check DB initialized
-        db_ok = DB.axioms.any? rescue false
-        checks << { name: "DB seeded", ok: db_ok }
-
-        # Check models available
-        model = LLM.select_available_model
-        checks << { name: "Models available", ok: !model.nil? }
-
-        # Check budget
-        budget_ok = LLM.budget_remaining > 0
-        checks << { name: "Budget remaining", ok: budget_ok }
-
-        checks.each do |c|
-          status = c[:ok] ? UI.pastel.green("✓") : UI.pastel.red("✗")
-          puts "  #{status} #{c[:name]}"
-        end
-
-        all_ok = checks.all? { |c| c[:ok] }
-        puts
-        puts all_ok ? "  System healthy." : "  Some checks failed."
-        puts
-      end
-
-      def print_axiom_stats
-        summary = AxiomStats.summary
-        puts
-        puts summary
-        puts
-      end
-
-      def opportunities(path)
-        path ||= MASTER.root
-        UI.header("Analyzing for opportunities")
-        puts "  Path: #{path}"
-        puts "  This may take a moment...\n\n"
-
-        result = CodeReview.opportunities(path)
-        if result[:error]
-          puts "  Error: #{result[:error]}"
-        else
-          %i[architectural micro_refinement ui_ux typography].each do |cat|
-            items = result[cat] || []
-            next if items.empty?
-
-            puts "  #{cat.to_s.gsub('_', ' ').upcase} (#{items.size})"
-            items.first(5).each { |item| puts "    • #{item}" }
-            puts
-          end
-        end
-
-        Result.ok(result)
-      end
-
-      # Refactor helper methods
-      def extract_mode(args)
-        mode_arg = args.find { |a| a.start_with?("--") }
-        case mode_arg
-        when "--raw" then :raw
-        when "--apply" then :apply
-        when "--preview" then :preview
-        else :preview # default
-        end
-      end
-
-      def lint_output(text)
-        lint_stage = Stages::Lint.new
-        result = lint_stage.call({ response: text })
-        result.ok? ? result.value[:response] : text
-      end
-
-      def render_output(text)
-        render_stage = Stages::Render.new
-        result = render_stage.call({ response: text })
-        result.ok? ? result.value[:rendered] : text
-      end
-
-      def format_council_summary(council_info)
-        return nil unless council_info
-
-        if council_info[:vetoed_by]&.any?
-          "  Council: VETOED by #{council_info[:vetoed_by].join(', ')}"
-        elsif council_info[:consensus]
-          pct = (council_info[:consensus] * 100).round(0)
-          verdict = council_info[:verdict] || :unknown
-          "  Council: #{verdict.to_s.upcase} (#{pct}% consensus)"
-        else
-          nil
-        end
-      end
-
-      def display_raw_output(result, rendered, council_info)
-        puts "\n  Proposals: #{result.value[:proposals].size}"
-        puts "  Cost: #{UI.currency_precise(result.value[:cost])}"
-        if (summary = format_council_summary(council_info))
-          puts summary
-        end
-        puts "\n#{rendered}\n"
-      end
-
-      def display_preview(path, original, proposed, result, council_info)
-        require_relative "diff_view"
-        diff = DiffView.unified_diff(original, proposed, filename: File.basename(path))
-        
-        puts "\n  Proposals: #{result.value[:proposals].size}"
-        puts "  Cost: #{UI.currency_precise(result.value[:cost])}"
-        if (summary = format_council_summary(council_info))
-          puts summary
-        end
-        puts "\n#{diff}"
-        puts "  Use --apply to write changes, --raw to see full output"
-      end
-
-      def apply_refactor(path, original, proposed, result, council_info)
-        require_relative "diff_view"
-        diff = DiffView.unified_diff(original, proposed, filename: File.basename(path))
-        
-        puts "\n  Proposals: #{result.value[:proposals].size}"
-        puts "  Cost: #{UI.currency_precise(result.value[:cost])}"
-        if (summary = format_council_summary(council_info))
-          puts summary
-        end
-        puts "\n#{diff}"
-        
-        # Prompt for confirmation
-        print "\n  Apply these changes? [y/N] "
-        response = $stdin.gets&.strip&.downcase
-        
-        if response == "y" || response == "yes"
-          # Track original content for undo
-          Undo.track_edit(path, original)
-          
-          # Write changes to disk
-          File.write(path, proposed)
-          
-          puts "  ✓ Changes applied to #{path}"
-          puts "  (Use 'undo' command to revert)"
-        else
-          puts "  Changes not applied"
-        end
-      end
+      text
     end
   end
 end

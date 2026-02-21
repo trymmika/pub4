@@ -1,70 +1,92 @@
 # frozen_string_literal: true
 
-require "time"
-
 module MASTER
-  # Boot - OpenBSD dmesg-style startup (dense, terse, beautiful)
   module Boot
-    # Critical methods that must exist at runtime
-    SMOKE_TEST_METHODS = {
-      LLM => %i[ask pick tier=],
-      Executor => %i[call],
-      Result => %i[ok err ok? err?],
+    OPTIONAL_MODULES = {
+      "Council" => :council_review,
+      "CodeReview" => :analyze,
+      "AutoFixer" => :fix,
     }.freeze
 
     class << self
+      def smoke_test_methods
+        {
+          LLM => %i[ask tier=],
+          Executor => %i[call],
+          Result => %i[ok err ok? err?],
+        }
+      rescue NameError => e
+        warn "Smoke test skipped: #{e.message}"
+        {}
+      end
+
       def banner
-        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        start_time = MASTER::Utils.monotonic_now
         timestamp = Time.now.utc.strftime("%a %b %e %H:%M:%S UTC %Y")
         user = ENV["USER"] || ENV["USERNAME"] || "user"
-        host = `hostname`.strip rescue "localhost"
+        shell = ENV["SHELL"] ? File.basename(ENV["SHELL"]) : "unknown-shell"
+        prompt_hint = shell == "zsh" ? "%" : "$"
+        host = begin
+          require 'timeout'
+          Timeout.timeout(2) { `hostname`.strip }
+        rescue Timeout::Error
+          "unknown"
+        rescue StandardError
+          "unknown"
+        end
 
-        # Smoke test first - catch runtime errors early
         smoke_result = smoke_test
 
-        # Dense dmesg - no fluff, no breathing room
-        puts c("MASTER #{VERSION} #1: #{timestamp}")
-        puts c("#{user}@#{host}:#{MASTER.root}")
-        puts c("cpu0 at mainbus0: #{RUBY_PLATFORM}")
-        puts c("ruby0 at cpu0: ruby #{RUBY_VERSION}")
-        puts c("db0 at ruby0: #{DB.axioms.size} axioms, #{DB.council.size} personas")
-        puts c("llm0 at db0: openrouter #{tier_models}")
-        puts c("budget0 at llm0: #{UI.currency(LLM.budget_remaining)} remaining")
-        puts c("tts0 at budget0: #{tts_status}")
-        puts c("self0 at tts0: #{self_awareness_summary}")
-        puts c("pledge0 at cpu0: #{Pledge.available? ? 'armed' : 'unavailable'}")
-        puts c("executor0 at pledge0: #{Executor::PATTERNS.join('/')}")
-        puts c("smoke0 at executor0: #{smoke_result}")
-        elapsed = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time) * 1000).round
-        puts c("boot: #{elapsed}ms")
+        lines = [
+          c("MASTER #{VERSION} (CONSTITUTIONAL) #1: #{timestamp}"),
+          c("    #{user}@#{host}:#{MASTER.root}"),
+          c("cpu0 at mainbus0: #{RUBY_PLATFORM}, ruby #{RUBY_VERSION}"),
+          c("sh0 at cpu0: #{shell} prompt #{user}#{prompt_hint}"),
+          c("db0 at cpu0: #{DB.axioms.size} axioms, #{defined?(DB) && DB.respond_to?(:council) ? DB.council.size : 0} personas"),
+          c("llm0 at db0: #{tier_models}"),
+          c("budget0 at llm0: #{UI.currency(LLM.budget_remaining)}"),
+          c("pledge0 at cpu0: #{defined?(Pledge) && Pledge.available? ? 'armed' : 'unavailable'}"),
+          c("executor0 at pledge0: #{Executor::PATTERNS.join('/')}"),
+          c("smoke0 at executor0: #{smoke_result}"),
+          c("hint0 at smoke0: run `bin/master help` to start"),
+        ]
+
+        yield(lines) if block_given?
+
+        elapsed = ((MASTER::Utils.monotonic_now - start_time) * 1000).round
+        lines << c("boot: #{elapsed}ms")
+
+        puts lines.join("\n")
         puts
       end
 
-      # For web mode, also print the URL
       def banner_with_web(port)
-        banner
-        puts c("web0 at smoke0: http://localhost:#{port}")
-        puts
+        banner do |lines|
+          lines << c("web0 at smoke0: http://localhost:#{port}")
+        end
       end
 
-      # Verify critical methods exist at runtime
       def smoke_test
         missing = []
-        
-        SMOKE_TEST_METHODS.each do |mod, methods|
+
+        smoke_test_methods.each do |mod, methods|
           methods.each do |method|
             unless mod.respond_to?(method) || (mod.is_a?(Class) && mod.instance_methods.include?(method))
               missing << "#{mod}##{method}"
             end
           end
         end
-        
-        # Also check optional modules
-        optional_checks = []
-        optional_checks << "Chamber" if defined?(Chamber) && !Chamber.respond_to?(:call)
-        optional_checks << "CodeReview" if defined?(CodeReview) && !CodeReview.respond_to?(:analyze)
-        optional_checks << "AutoFixer" if defined?(AutoFixer) && !AutoFixer.new.respond_to?(:fix)
-        
+
+        optional_checks = OPTIONAL_MODULES.select do |name, method|
+          mod = begin
+            MASTER.const_get(name)
+          rescue NameError => e
+            MASTER::Logging.warn("Failed to resolve constant: #{name} — #{e.message}", subsystem: "boot") if defined?(MASTER::Logging)
+            nil
+          end
+          mod && !mod.respond_to?(method) && !mod.instance_methods.include?(method)
+        end.keys
+
         if missing.any?
           UI.warn("Missing methods: #{missing.join(', ')}")
           "FAIL #{missing.size}"
@@ -84,22 +106,7 @@ module MASTER
       end
 
       def tier_models
-        LLM.model_tiers.map do |tier, models|
-          names = models.first(2).map { |m| LLM.extract_model_name(m) }.join(",")
-          "#{tier}:#{names}"
-        end.join(" ")
-      end
-
-      def tts_status
-        Speech.engine_status
-      rescue StandardError
-        "off"
-      end
-
-      def self_awareness_summary
-        SelfMap.summary
-      rescue StandardError
-        "unavailable"
+        LLM.all_models.map { |m| LLM.extract_model_name(m) }.first(6).join(", ")
       end
     end
   end

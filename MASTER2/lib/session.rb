@@ -2,14 +2,38 @@
 
 require "securerandom"
 require "json"
+require "yaml"
 require "time"
+require "fileutils"
+require "forwardable"
+
+require_relative "session/memory"
+require_relative "session/capture"
+require_relative "session/replay"
+require_relative "session/language"
+require_relative "session/persona"
 
 module MASTER
   # Session - Persistent session management with auto-save
+  # STORAGE: Uses Memory module (JSON files in .sessions/)
+  # NOTE: DB JSONL system is separate and used by LearningFeedback
+  # See learnings.rb line 241-242 for architecture notes
   class Session
     attr_reader :id, :created_at, :history, :metadata
 
     AUTOSAVE_INTERVAL = 30  # seconds
+    SUPPORTED_LANGUAGES = %i[english norwegian].freeze
+
+    # SUPPORTED_PERSONAS - delegate to Personas module
+    SUPPORTED_PERSONAS = Personas.supported_list.freeze
+
+    # Load language rules from data/language_rules.yml per ONE_SOURCE axiom
+    LANGUAGE_RULES_PATH = File.join(MASTER.root, "data", "language_rules.yml")
+    NORWEGIAN_RULES = if File.exist?(LANGUAGE_RULES_PATH)
+                        YAML.load_file(LANGUAGE_RULES_PATH).dig("norwegian", "rules").freeze
+                      else
+                        [].freeze
+                      end
 
     def initialize(id: nil)
       @id = id || SecureRandom.uuid
@@ -31,7 +55,7 @@ module MASTER
 
       @history << entry
       @dirty = true
-      
+
       # Auto-save periodically
       autosave_if_needed
       entry
@@ -108,62 +132,83 @@ module MASTER
       true
     end
 
-    def self.load(id)
-      data = Memory.load_session(id)
-      return nil unless data
+    class << self
+      # @param id [String] Session ID
+      # @return [Session, nil] Session instance or nil if not found
+      def load(id)
+        data = Memory.load_session(id)
+        return nil unless data
 
-      session = new(id: data[:id])
-      session.instance_variable_set(:@created_at, Time.parse(data[:created_at]))
-      session.instance_variable_set(:@history, data[:history] || [])
-      session.instance_variable_set(:@metadata, data[:metadata] || {})
-      session.instance_variable_set(:@dirty, false)
-      session
-    end
-
-    def self.list
-      Memory.list_sessions
-    end
-
-    def self.current
-      @current ||= new
-    end
-
-    def self.current=(session)
-      @current = session
-    end
-
-    def self.resume(id)
-      session = load(id)
-      return nil unless session
-
-      @current = session
-      session
-    end
-
-    def self.start_new
-      @current = new
-    end
-
-    # Install signal handlers for crash recovery
-    def self.install_crash_handlers
-      %w[INT TERM].each do |signal|
-        Signal.trap(signal) do
-          save_on_crash
-          exit(signal == "INT" ? 130 : 143)
-        end
+        session = new(id: data[:id])
+        session.instance_variable_set(:@created_at, Time.parse(data[:created_at]))
+        session.instance_variable_set(:@history, data[:history] || [])
+        session.instance_variable_set(:@metadata, data[:metadata] || {})
+        session.instance_variable_set(:@dirty, false)
+        session
       end
-    rescue ArgumentError
-      # Some signals not available on all platforms
-    end
 
-    def self.save_on_crash
-      return unless @current&.dirty?
-      
-      @current.instance_variable_set(:@metadata, 
-        @current.metadata.merge(crashed: true, crash_time: Time.now.utc.iso8601))
-      @current.save
-    rescue StandardError
-      # Best effort on crash
+      # List all available sessions
+      # @return [Array<Hash>] Array of session metadata
+      def list
+        Memory.list_sessions
+      end
+
+      # Get current session (creates new if none exists)
+      # @return [Session] Current session
+      def current
+        @current ||= new
+      end
+
+      # Set current session
+      # @param session [Session] Session to set as current
+      def current=(session)
+        @current = session
+      end
+
+      # Resume existing session by ID
+      # @param id [String] Session ID to resume
+      # @return [Session, nil] Session if found, nil otherwise
+      def resume(id)
+        session = load(id)
+        return nil unless session
+
+        @current = session
+        session
+      end
+
+      # Start new session and set as current
+      # @return [Session] New session
+      def start_new
+        @current = new
+      end
+
+      # Install signal handlers for crash recovery
+      # @return [void]
+      def install_crash_handlers
+        %w[INT TERM].each do |signal|
+          Signal.trap(signal) do
+            # Use exit! to avoid deadlock - skips finalizers but safe in signal handler
+            # Do not call save_on_crash here as it acquires mutexes
+            exit_code = signal == "INT" ? 130 : 143
+            exit!(exit_code)
+          end
+        end
+      rescue ArgumentError
+        # Some signals not available on all platforms
+      end
+
+      # Save current session on crash
+      # @return [void]
+      # NOTE: Should not be called from signal handler - use exit! instead
+      def save_on_crash
+        return unless @current&.dirty?
+
+        @current.instance_variable_set(:@metadata,
+          @current.metadata.merge(crashed: true, crash_time: Time.now.utc.iso8601))
+        @current.save
+      rescue StandardError => e
+        $stderr.puts "session: crash save failed: #{e.message}"
+      end
     end
 
     def to_h
@@ -174,6 +219,13 @@ module MASTER
         cost: total_cost,
         metadata: @metadata,
       }
+    end
+
+    # Delegate language methods to Language module
+    class << self
+      extend Forwardable
+      def_delegators :Language, :detect_language, :norwegian_style_check
+      def_delegators :Persona, :set_persona, :current_persona
     end
   end
 end

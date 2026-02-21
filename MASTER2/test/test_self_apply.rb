@@ -10,7 +10,7 @@ class TestSelfApply < Minitest::Test
 
   def test_all_files_under_300_lines
     # Note: Larger files allowed if well-structured (executor, llm, commands)
-    max_lines = 700
+    max_lines = MASTER::QualityStandards.max_file_lines_self_test
     violations = []
     @lib_files.each do |file|
       lines = File.read(file).lines.size
@@ -36,16 +36,13 @@ class TestSelfApply < Minitest::Test
     violations = []
     @lib_files.each do |file|
       content = File.read(file)
-      # Match "rescue =>" or "rescue\n" but not "rescue StandardError"
+      # Match "rescue =>" or "rescue\n" but not "rescue StandardError", "rescue LoadError", etc.
+      # Allow specific exception rescues like "rescue NameError", "rescue Timeout::Error"
       next unless content.match?(/rescue\s*(=>|$)/)
       violations << File.basename(file)
     end
-    # Allow bare rescues in UI/graceful degradation code
-    allowed = %w[ui.rb boot.rb autocomplete.rb creative_chamber.rb edge_tts.rb
-                 introspection.rb llm_friendly.rb momentum.rb problem_solver.rb
-                 progress.rb replicate.rb result.rb shell.rb swarm.rb weaviate.rb]
-    violations -= allowed
-    assert violations.empty?, "Files with bare rescue:\n  #{violations.join("\n  ")}"
+    # Assert zero violations - any file needing exception handling should use specific rescue
+    assert violations.empty?, "Files with bare rescue (use 'rescue SpecificError' instead):\n  #{violations.join("\n  ")}"
   end
 
   def test_all_modules_have_docstrings
@@ -58,8 +55,8 @@ class TestSelfApply < Minitest::Test
         violations << File.basename(file)
       end
     end
-    # Only warn, don't fail - docstrings are in progress
-    skip "Docstrings not complete yet" if violations.any?
+    # Test should run and either pass or fail honestly
+    assert violations.empty?, "Modules without docstrings:\n  #{violations.join("\n  ")}"
   end
 
   def test_code_review_finds_no_critical_issues
@@ -122,5 +119,37 @@ class TestSelfApply < Minitest::Test
       path = File.join(MASTER.root, "lib", "#{req}.rb")
       assert File.exist?(path), "Dead require: #{req}"
     end
+  end
+
+  def test_enforcement_self_check_exists
+    # Test that self_check! method exists and can be called
+    assert_respond_to MASTER::Enforcement, :self_check!
+    assert_respond_to MASTER::Enforcement, :last_self_check
+  end
+
+  def test_enforcement_self_check_runs
+    # Run self-check and verify it returns expected structure
+    result = MASTER::Enforcement.self_check!
+
+    assert result.is_a?(Hash), "self_check! should return a hash"
+    assert result.key?(:timestamp), "Result should have timestamp"
+    assert result.key?(:files_checked), "Result should have files_checked"
+    assert result.key?(:absolute_violations), "Result should have absolute_violations"
+    assert result.key?(:passed), "Result should have passed flag"
+
+    assert result[:files_checked] > 0, "Should check at least one file"
+    assert result[:absolute_violations].is_a?(Array), "Violations should be an array"
+  end
+
+  def test_enforcement_self_check_caches_result
+    # First call
+    result1 = MASTER::Enforcement.self_check!
+    timestamp1 = result1[:timestamp]
+
+    # Second call should return cached result
+    result2 = MASTER::Enforcement.self_check!
+    timestamp2 = result2[:timestamp]
+
+    assert_equal timestamp1, timestamp2, "self_check! should cache its result"
   end
 end

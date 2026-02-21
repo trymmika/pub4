@@ -7,51 +7,274 @@ Encoding.default_internal = Encoding::UTF_8
 $stdout.set_encoding(Encoding::UTF_8)
 $stderr.set_encoding(Encoding::UTF_8)
 
+# CLI flags
+if ARGV.delete("--verbose")
+  ENV["MASTER_TRACE"] = "3"
+elsif ARGV.delete("--quiet") || ARGV.delete("-q")
+  ENV["MASTER_TRACE"] = "0"
+end
+
+require_relative "../lib/single_instance"
+require "digest"
+require "tmpdir"
+require "fileutils"
+
+def enforce_single_master!(command)
+  return if %w[help -h --help version -v --version].include?(command)
+
+  root_hash = Digest::SHA256.hexdigest(File.expand_path("..", __dir__))[0, 12]
+  lock_path = ENV["MASTER_LOCK_PATH"] || File.join(Dir.tmpdir, "master2-#{root_hash}.lock")
+  MASTER::SingleInstance.acquire(lock_path: lock_path)
+rescue MASTER::SingleInstance::AlreadyRunningError => e
+  $stderr.puts e.message
+  $stderr.puts "Set MASTER_ALLOW_MULTI=1 to bypass this guard intentionally."
+  exit 1
+end
+
+command = ARGV[0]
+args = ARGV[1..-1] || []
+enforce_single_master!(command)
+
+# Auto-bundle install if gems missing
+project_root = File.expand_path("..", __dir__)
+ruby_abi = RUBY_VERSION.split(".")[0, 2].join(".")
+gem_home = ENV["GEM_HOME"] || File.expand_path("~/.local/share/gem/ruby/#{ruby_abi}")
+bundle_path = ENV["MASTER_BUNDLE_PATH"] || File.join(project_root, "var", "bundle")
+bundle_cache_path = ENV["MASTER_BUNDLE_CACHE_PATH"] || File.join(project_root, "var", "bundle-cache")
+bundle_app_config = ENV["MASTER_BUNDLE_APP_CONFIG"] || File.join(project_root, "var", "bundle-config")
+
+[gem_home, bundle_path, bundle_cache_path, bundle_app_config].each { |p| FileUtils.mkdir_p(p) }
+
+# Write .bundle/config so standalone 'bundle install' works (OpenBSD 7.8 fix)
+bundle_config_file = File.join(bundle_app_config, "config")
+bundle_config_content = <<~YAML
+  ---
+  BUNDLE_PATH: "var/bundle"
+  BUNDLE_CACHE_PATH: "var/bundle-cache"
+  BUNDLE_DISABLE_SHARED_GEMS: "true"
+YAML
+File.write(bundle_config_file, bundle_config_content) unless File.exist?(bundle_config_file)
+
+ENV["BUNDLE_GEMFILE"] = File.join(project_root, "Gemfile")
+ENV["GEM_HOME"] = gem_home
+ENV["GEM_PATH"] = gem_home
+ENV["PATH"] = "#{gem_home}/bin:#{ENV["PATH"]}" unless ENV["PATH"].include?("#{gem_home}/bin")
+ENV["BUNDLE_PATH"] ||= bundle_path
+ENV["BUNDLE_CACHE_PATH"] ||= bundle_cache_path
+ENV["BUNDLE_APP_CONFIG"] ||= bundle_app_config
+ENV["BUNDLE_DISABLE_SHARED_GEMS"] ||= "true"
+ENV["BUNDLE_FROZEN"] ||= "false"
+
+begin
+  require "bundler/setup"
+rescue LoadError, StandardError => e
+  $stderr.puts "MASTER2 boot: preparing local dependencies..."
+  
+  # Run platform diagnostics before retrying
+  require_relative "../lib/platform_check"
+  if defined?(MASTER::PlatformCheck)
+    issues = MASTER::PlatformCheck.diagnose
+    unless issues.empty?
+      $stderr.puts "MASTER2 boot: platform issues detected"
+      MASTER::PlatformCheck.print_diagnostics
+    end
+  end
+  
+  ok = system("bundle", "install", "--quiet", exception: false)
+  unless ok
+    $stderr.puts "MASTER2 boot: bundle install failed: #{e.message}"
+    if defined?(MASTER::PlatformCheck) && MASTER::PlatformCheck.openbsd?
+      $stderr.puts "MASTER2 boot: OpenBSD detected. Common fixes:"
+      MASTER::PlatformCheck.print_diagnostics
+    else
+      $stderr.puts "MASTER2 boot: check network access and re-run: bin/master"
+    end
+    exit 1
+  end
+  retry
+end
 require "json"
 require_relative "../lib/master"
 
-MASTER::DB.setup
+begin
+  MASTER::DB.setup
+rescue StandardError => e
+  $stderr.puts "DB setup failed: #{e.message} — running without persistence"
+end
 MASTER::Session.install_crash_handlers
 
-case ARGV[0]
-when "--help", "-h"
-  puts "MASTER v#{MASTER::VERSION}"
-  puts "\nUsage: master [OPTIONS]"
-  puts "\nOptions:"
-  puts "  -h, --help        Show this help message"
-  puts "  -v, --version     Show version information"
-  puts "  -w, --web         Start web-only mode (no REPL)"
-  puts "  -p, --pipe        Pipe mode for automation"
-  puts "  -t, --tts [TOPIC] TTS test mode - continuous talking"
-  puts "  -d, --daemon      Daemon mode for agentd"
-  puts "\nDefault: Start REPL with integrated web server"
+# Helper: Execute full self-run across pub4 repo
+def run_selfrun(args)
+  puts "MASTER2 Self-Run: Analyzing entire pub4 repository..."
+  pub4_root = File.expand_path("../..", __dir__)
+  strict = args.include?("--strict")
+  align_axioms = strict || args.include?("--axioms")
+  include_all = args.include?("--all-files")
+  apply = args.include?("--apply")
+
+  run_phase1(pub4_root, apply, strict, align_axioms, include_all)
+  run_phase2(pub4_root, apply, strict, align_axioms, include_all)
+  run_phase3(pub4_root, apply, strict, align_axioms, include_all)
+  run_phase4
   exit 0
-when "--version", "-v"
-  puts "MASTER v#{MASTER::VERSION}"
+end
+
+def run_phase1(root, apply, strict, align_axioms, include_all)
+  puts "\n=== Phase 1: Self-Refactoring MASTER2 ==="
+  mr = MASTER::MultiRefactor.new(dry_run: !apply, budget_cap: 1.0, force_rewrite: strict, align_axioms: align_axioms, include_all_files: include_all)
+  phase1_path = include_all ? File.join(root, "MASTER2") : File.join(root, "MASTER2", "lib")
+  mr.run(path: phase1_path)
+end
+
+def run_phase2(root, apply, strict, align_axioms, include_all)
+  puts "\n=== Phase 2: Deploy Scripts ==="
+  mr2 = MASTER::MultiRefactor.new(dry_run: !apply, budget_cap: 1.0, force_rewrite: strict, align_axioms: align_axioms, include_all_files: include_all)
+  mr2.run(path: File.join(root, "deploy"))
+end
+
+def run_phase3(root, apply, strict, align_axioms, include_all)
+  puts "\n=== Phase 3: Business Plans ==="
+  mr3 = MASTER::MultiRefactor.new(dry_run: !apply, budget_cap: 0.5, force_rewrite: strict, align_axioms: align_axioms, include_all_files: include_all)
+  mr3.run(path: File.join(root, "bp"))
+end
+
+def run_phase4
+  puts "\n=== Phase 4: Self-Test ==="
+  MASTER::Introspection.run if defined?(MASTER::Introspection)
+end
+
+# Helper: Delegate command to Commands.dispatch_one
+def delegate_to_commands(command, args)
+  input = [command, *args].join(" ")
+  pipeline = MASTER::Pipeline.new
+  result = MASTER::Commands.dispatch_one(input, pipeline: pipeline)
+
+  case result
+  when nil
+    puts "Unknown command: #{command}"
+    puts "Run 'master help' for usage information"
+    exit 1
+  when :exit
+    exit 0
+  when MASTER::Commands::HANDLED
+    exit 0
+  else
+    exit(result.respond_to?(:ok?) && result.ok? ? 0 : 1)
+  end
+end
+
+case command
+when "version", "-v", "--version"
+  puts "MASTER2 v#{MASTER::VERSION}"
   exit 0
+
+when "help", "-h", "--help"
+  puts <<~HELP
+    MASTER2 - Constitutional AI Code Quality System
+
+    OpenBSD + zsh quick start:
+      dev% bin/master
+      dev% bin/master help
+
+    Usage:
+      master [command] [arguments]
+
+    Commands:
+      refactor <file>             Refactor file with LLM guidance
+      multi-refactor [path]       Refactor directory (add: --apply --strict --axioms --all-files)
+      selfrun [--apply]           Full self-run across pub4 (add: --strict --axioms --all-files)
+      fix [--all|<path>]          Fix violations in files or directory
+      scan [directory]            Scan for code smells (default: .)
+      chamber <file>              Chamber review with multi-model deliberation
+      ideate <topic>              Generate 15+ alternatives for a topic
+      evolve [args]               Evolve entire codebase
+      browse <url>                Browse and extract web content
+      speak <text>                Text-to-speech output
+      session <cmd>               Session management (replay|ls|diff|export)
+      cache [stats|clear]         Semantic cache management
+      health                      System health check
+      doctor [--verbose]          Deep diagnostics and fix hints
+      bootstrap                   First-run setup and dependency bootstrap
+      history-dig [file]          Recover deleted historical file (master.yml/master.json)
+      codify [export-json]        Show or export codified design+code rules
+      opportunities [path]        Find improvement opportunities
+      style-guides [sync]         List or sync style guide repos
+      axioms-stats                Display axiom violation statistics
+      schedule <cmd>              Job scheduler (list|add|remove|enable|disable)
+      heartbeat <cmd>             Heartbeat control (start|stop|status)
+      policy [set <profile>]      Policy profile management
+      version                     Show version
+      help                        Show this help
+
+    Legacy Options:
+      -w, --web                   Start web-only mode (no REPL)
+      -p, --pipe                  Pipe mode for automation
+      -t, --tts [TOPIC]           TTS test mode
+      -d, --daemon                Daemon mode for agentd
+
+    Examples:
+      dev% bin/master refactor deploy/openbsd/openbsd.sh
+      dev% bin/master fix --all
+      dev% bin/master scan deploy/rails/
+      dev% bin/master chamber lib/master.rb
+      dev% bin/master ideate "authentication system"
+      dev% bin/master session save milestone-1
+
+    Environment Variables:
+      OPENROUTER_API_KEY          Required for LLM operations
+      MASTER_VOICE                Enable voice mode (true/false)
+      MASTER_DEBUG                Debug logging (true/false)
+
+    Documentation:
+      https://github.com/anon987654321/pub4/tree/main/MASTER2
+
+    No command starts REPL mode with integrated web server.
+    One command is enough: run `bin/master` and follow prompts.
+  HELP
+  exit 0
+
 when "--web", "-w"
   # Web-only mode (no REPL)
-  server = MASTER::Server.new
+  web_port = args.first&.to_i
+  web_port = nil if web_port == 0
+  server = MASTER::Server.new(port: web_port)
   MASTER::Boot.banner_with_web(server.port)
   server.start
   puts "Press Ctrl+C to stop"
   sleep
+
 when "--pipe", "-p"
   # Pipe mode for automation
   input = JSON.parse($stdin.read) rescue { "text" => $stdin.read }
   result = MASTER::Pipeline.new.call(input)
   puts JSON.generate(result.ok? ? result.value : { error: result.error })
+
 when "--tts", "-t"
   # TTS test mode - continuous talking (Windows/Cygwin)
   topic = ARGV[1]&.to_sym || :master
   puts "Starting continuous TTS (#{topic})... Ctrl+C to stop"
-  MASTER::StreamTTS.windows_chatter(topic: topic)
+  MASTER::Speech.chatter(topic: topic)
+
 when "--daemon", "-d"
   # Daemon mode for agentd
   require_relative "../sbin/agentd" if File.exist?(File.join(__dir__, "../sbin/agentd"))
+
+when "selfrun", "self-run"
+  # Full self-run: analyze and refactor the entire pub4 repo
+  run_selfrun(args)
+
+when "narrate", "narration"
+  result = MASTER::Commands.narrate_command(args.join(" "))
+  exit result.respond_to?(:ok?) && result.ok? ? 0 : 1
+
 else
-  # Default: REPL with integrated web server
-  server = MASTER::Server.new
-  Thread.new { server.start }
-  MASTER::Pipeline.repl
+  if command.nil?
+    # No command = interactive REPL mode (default)
+    server = MASTER::Server.new
+    Thread.new { server.start }
+    MASTER::Pipeline.repl
+  else
+    # Delegate all other commands to Commands.dispatch_one
+    delegate_to_commands(command, args)
+  end
 end

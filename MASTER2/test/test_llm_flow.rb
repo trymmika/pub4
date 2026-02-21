@@ -6,7 +6,7 @@ require_relative "../lib/master"
 class TestLLMFlow < Minitest::Test
   # Model tier tests
   def test_tier_order_exists
-    assert_equal %i[strong fast cheap], MASTER::LLM::TIER_ORDER
+    assert_equal %i[premium strong fast cheap], MASTER::LLM::TIER_ORDER
   end
 
   def test_model_tiers_hash_exists
@@ -15,14 +15,9 @@ class TestLLMFlow < Minitest::Test
     assert tiers.key?(:strong) || tiers.key?(:fast) || tiers.key?(:cheap)
   end
 
-  def test_pick_returns_model
-    model = MASTER::LLM.pick
+  def test_select_model_returns_model
+    model = MASTER::LLM.select_model
     # Should return a string or nil
-    assert model.nil? || model.is_a?(String)
-  end
-
-  def test_pick_with_tier
-    model = MASTER::LLM.pick(:fast)
     assert model.nil? || model.is_a?(String)
   end
 
@@ -99,7 +94,7 @@ class TestLLMFlow < Minitest::Test
   # Tier is computed from budget, not settable
   def test_tier_returns_symbol
     tier = MASTER::LLM.tier
-    assert %i[strong fast cheap].include?(tier)
+    assert %i[premium strong fast cheap].include?(tier)
   end
 
   # Current model tracking
@@ -107,12 +102,6 @@ class TestLLMFlow < Minitest::Test
     MASTER::LLM.current_model = "test-model"
     assert_equal "test-model", MASTER::LLM.current_model
     MASTER::LLM.current_model = nil
-  end
-
-  def test_current_tier_accessor
-    MASTER::LLM.current_tier = :strong
-    assert_equal :strong, MASTER::LLM.current_tier
-    MASTER::LLM.current_tier = nil
   end
 
   # Prompt display

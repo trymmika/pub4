@@ -6,3 +6,6 @@ vendor/
 Gemfile.lock
 nul
 :memory:/
+OUTPUT_*.md
+var/
+coverage/

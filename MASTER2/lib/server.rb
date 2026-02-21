@@ -2,29 +2,46 @@
 
 require "json"
 require "socket"
+require "rack/utils"
+require_relative "server/handlers"
+require_relative "server/websocket"
 
 module MASTER
   # Server - Multimodal web UI with Falcon
   class Server
+    include Handlers
+    include WebSocket
+    JSON_TYPE = "application/json".freeze
+    HTML_TYPE = "text/html".freeze
+    TEXT_TYPE = "text/plain".freeze
+    CT_HEADER = "content-type".freeze
     AUTH_TOKEN = ENV["MASTER_TOKEN"] || SecureRandom.hex(16)
     VIEWS_DIR = File.join(File.dirname(__FILE__), "views")
 
     attr_reader :port, :output_queue
 
-    def initialize(pipeline: nil)
+    def initialize(pipeline: nil, port: nil)
       @pipeline = pipeline || Pipeline.new
-      @port = find_port
-      @output_queue = Queue.new
+      @port = port || find_port
+      @output_queue = Thread::Queue.new
       @running = false
     end
 
     def start
       return if @running
 
+      kill_port_users(@port)
+      require "falcon"
+      require "async"
+      require "async/http/endpoint"
       @running = true
-      Thread.new { run_server }
-      sleep 0.3
-      Dmesg.log("web0", message: "http://localhost:#{@port}") rescue nil
+      @app = build_app
+      @server_thread = Thread.new { run_server }
+      # Wait for Falcon to bind
+      10.times do
+        sleep 0.3
+        break if port_open?(@port)
+      end
     end
 
     def stop
@@ -33,6 +50,10 @@ module MASTER
 
     def url
       "http://localhost:#{@port}"
+    end
+
+    def running?
+      @running
     end
 
     private
@@ -44,46 +65,34 @@ module MASTER
       port = server.addr[1]
       server.close
       port
-    rescue StandardError
+    rescue StandardError => e
       8080
     end
 
     def run_server
-      require "falcon"
-      require "async"
-      require "async/http/endpoint"
-
-      app = build_app
-
-      Async do
+      Async do |task|
         endpoint = Async::HTTP::Endpoint.parse("http://0.0.0.0:#{@port}")
-        server = Falcon::Server.new(Falcon::Server.middleware(app), endpoint)
+        server = Falcon::Server.new(Falcon::Server.middleware(@app), endpoint)
         server.run
+      rescue => e
+        $stderr.puts "Falcon error: #{e.class}: #{e.message}"
       end
-    rescue LoadError
-      run_webrick
     end
 
-    def run_webrick
-      require "webrick"
+    def kill_port_users(port)
+      pids = `lsof -ti:#{port} 2>/dev/null`.strip.split("\n").map(&:to_i).reject(&:zero?)
+      pids.each { |pid| Process.kill("TERM", pid) rescue nil }
+      sleep 0.3 unless pids.empty?
+    rescue StandardError
+      # best-effort
+    end
 
-      server = WEBrick::HTTPServer.new(
-        Port: @port,
-        Logger: WEBrick::Log.new("/dev/null"),
-        AccessLog: [],
-      )
-
-      server.mount_proc("/") { |_, res| res.body = read_view("cli.html"); res.content_type = "text/html" }
-      server.mount_proc("/health") { |_, res| res.body = health_json; res.content_type = "application/json" }
-      server.mount_proc("/poll") { |_, res| res.body = poll_json; res.content_type = "application/json" }
-
-      # Serve orb views
-      Dir.glob(File.join(VIEWS_DIR, "*.html")).each do |file|
-        name = "/" + File.basename(file)
-        server.mount_proc(name) { |_, res| res.body = File.read(file); res.content_type = "text/html" }
-      end
-
-      server.start
+    def port_open?(port)
+      s = TCPSocket.new("127.0.0.1", port)
+      s.close
+      true
+    rescue StandardError
+      false
     end
 
     def build_app
@@ -94,81 +103,34 @@ module MASTER
         path = env["PATH_INFO"]
         method = env["REQUEST_METHOD"]
 
+        unless path == "/health"
+          token = env["HTTP_AUTHORIZATION"]&.delete_prefix("Bearer ")
+          token ||= Rack::Utils.parse_query(env["QUERY_STRING"] || "")["token"]
+          return [401, {}, ["Unauthorized"]] unless token == AUTH_TOKEN
+        end
+
         case [method, path]
         when ["GET", "/"]
-          [200, { "content-type" => "text/html" }, [read_view("cli.html")]]
-
+          html = read_view("cli.html").sub("window.MASTER_TOKEN||''", "window.MASTER_TOKEN||'#{AUTH_TOKEN}'")
+          [200, { CT_HEADER => HTML_TYPE }, [html]]
         when ["GET", "/health"]
-          [200, { "content-type" => "application/json" }, [health_json]]
-
+          [200, { CT_HEADER => JSON_TYPE }, [health_json]]
         when ["GET", "/poll"]
-          text = queue.empty? ? nil : (queue.pop(true) rescue nil)
-          body = {
-            text: text,
-            tier: LLM.tier,
-            budget: LLM.budget_remaining,
-            version: VERSION,
-          }.to_json
-          [200, { "content-type" => "application/json" }, [body]]
-
+          handle_poll(queue)
         when ["POST", "/chat"]
-          body = env["rack.input"].read
-          data = JSON.parse(body) rescue {}
-          message = data["message"].to_s.strip
-
-          if message.empty?
-            [400, { "content-type" => "application/json" }, ['{"error":"no message"}']]
-          else
-            Thread.new do
-              result = pipeline.call({ text: message })
-              output = result.ok? ? result.value[:rendered] : "Error: #{result.error}"
-              queue.push(output)
-            rescue StandardError => e
-              queue.push("Error: #{e.message}")
-            end
-            [200, { "content-type" => "application/json" }, ['{"status":"processing"}']]
-          end
-
+          handle_chat(env, pipeline, queue)
         when ["GET", "/metrics"]
-          metrics = {
-            version: VERSION,
-            tier: LLM.tier,
-            budget_remaining: LLM.budget_remaining,
-            models: LLM.models.size,
-            tts: defined?(Audio) ? Audio.engine_status : "unavailable",
-            self: defined?(SelfAwareness) ? SelfAwareness.summary : "unavailable",
-          }.to_json
-          [200, { "content-type" => "application/json" }, [metrics]]
-
+          handle_metrics
+        when ["POST", "/tts"]
+          handle_tts(env)
         when ["GET", "/tts/stream"]
-          # SSE endpoint for TTS streaming
-          text = Rack::Utils.parse_query(env["QUERY_STRING"])["text"]
-          return [400, {}, ["Missing text"]] unless text
-
-          unless defined?(Web::OrbTTS)
-            return [501, { "content-type" => "text/plain" }, ["TTS not available"]]
-          end
-
-          headers = {
-            "Content-Type" => "text/event-stream",
-            "Cache-Control" => "no-cache",
-            "Connection" => "keep-alive",
-          }
-          body = Web::OrbTTS.stream(text)
-          [200, headers, body]
-
+          handle_tts_stream(env)
+        when ["GET", "/ws"]
+          handle_websocket(env, pipeline)
+        when ["GET", "/ws-test"]
+          [200, { CT_HEADER => HTML_TYPE }, [read_view("ws_test.html")]]
         else
-          # Serve orb views and static files
-          clean_path = path.delete_prefix("/")
-          view_path = File.join(VIEWS_DIR, clean_path)
-
-          if File.exist?(view_path) && File.file?(view_path)
-            ext = File.extname(path)
-            type = { ".html" => "text/html", ".js" => "application/javascript", ".css" => "text/css" }[ext] || "text/plain"
-            [200, { "content-type" => type }, [File.read(view_path)]]
-          else
-            [404, { "content-type" => "text/plain" }, ["Not found"]]
-          end
+          serve_static_file(path)
         end
       }
     end
@@ -178,13 +140,13 @@ module MASTER
     end
 
     def poll_json
-      text = @output_queue.empty? ? nil : (@output_queue.pop(true) rescue nil)
+      text = begin; @output_queue.pop(true) unless @output_queue.empty?; rescue ThreadError; nil; end
       { text: text, tier: LLM.tier, budget: LLM.budget_remaining }.to_json
     end
 
     def read_view(name)
       File.read(File.join(VIEWS_DIR, name))
-    rescue StandardError
+    rescue StandardError => e
       "<!DOCTYPE html><html><body><h1>MASTER #{VERSION}</h1><p>View not found: #{name}</p></body></html>"
     end
   end

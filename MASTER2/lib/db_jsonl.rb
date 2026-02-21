@@ -2,6 +2,9 @@
 
 require "json"
 require "fileutils"
+require "yaml"
+
+require_relative "db_jsonl/tables"
 
 module MASTER
   # Store - Persists axioms, council, costs, sessions to JSONL files
@@ -11,6 +14,9 @@ module MASTER
     @mutex = Monitor.new
     @cache = {}
 
+    # Initialize database at given path
+    # @param path [String, nil] Database directory path (defaults to var/db)
+    # @return [void]
     def setup(path: nil)
       @root = path || File.join(Paths.var, "db")
       FileUtils.mkdir_p(@root)
@@ -18,6 +24,8 @@ module MASTER
       ensure_seeded
     end
 
+    # Get database root directory
+    # @return [String] Absolute path to database directory
     def root
       @root ||= begin
         r = File.join(Paths.var, "db")
@@ -26,19 +34,40 @@ module MASTER
       end
     end
 
+    def load_yml(name)
+      yml_path = File.join(File.dirname(__dir__), "data", "#{name}.yml")
+      return {} unless File.exist?(yml_path)
+
+      YAML.safe_load_file(yml_path, symbolize_names: true) || {}
+    rescue StandardError => e
+      Logging.error("Failed to load #{name}.yml: #{e.message}")
+      {}
+    end
+
     def synchronize(&block)
       @mutex.synchronize(&block)
     end
 
+    # Clear all cached data
+    # @return [void]
     def clear_cache
       @cache.clear
     end
 
     # --- Axioms (cached) ---
+
+    # Get all axioms (cached)
+    # @return [Array<Hash>] Array of axiom records
     def axioms
       @cache[:axioms] ||= read_collection("axioms")
     end
 
+    # Add new axiom to database
+    # @param name [String] Axiom name
+    # @param description [String] Axiom description
+    # @param category [String, nil] Category classification
+    # @param scope [String, nil] Scope of application
+    # @return [Hash] Created axiom record
     def add_axiom(name:, description:, category: nil, scope: nil)
       record = {
         name: name,
@@ -52,10 +81,28 @@ module MASTER
     end
 
     # --- Council (cached) ---
+
+    # Get all council personas (cached)
+    # @return [Array<Hash>] Array of persona records
     def council
-      @cache[:council] ||= read_collection("council")
+      # Cache the result regardless of source
+      @cache[:council] ||= begin
+        # Try loading from YAML first for new structure, fall back to JSONL for backward compatibility
+        yml_data = load_yml("council")
+        if yml_data && yml_data[:council]
+          yml_data[:council]
+        else
+          read_collection("council")
+        end
+      end
     end
 
+    # Add new council persona
+    # @param name [String] Persona name
+    # @param role [String] Role description
+    # @param style [String] Communication style
+    # @param bias [String, nil] Decision bias
+    # @return [Hash] Created persona record
     def add_persona(name:, role:, style:, bias: nil)
       record = {
         name: name,
@@ -68,132 +115,14 @@ module MASTER
       @cache.delete(:council)
     end
 
-    # --- Costs ---
-    def log_cost(model:, tokens_in:, tokens_out:, cost:)
-      record = {
-        model: model,
-        tokens_in: tokens_in,
-        tokens_out: tokens_out,
-        cost: cost,
-        created_at: Time.now.utc.iso8601,
-      }
-      append("costs", record)
-    end
-
-    def total_cost
-      costs = read_collection("costs")
-      costs.sum { |c| c[:cost] || 0 }
-    end
-
-    def recent_costs(limit: 10)
-      read_collection("costs").last(limit)
-    end
-
-    # --- Circuits ---
-    def circuit(model)
-      circuits = read_collection("circuits")
-      circuits.find { |c| c[:model] == model }
-    end
-
-    def trip!(model)
-      circuits = read_collection("circuits")
-      existing = circuits.find { |c| c[:model] == model }
-
-      if existing
-        existing[:state] = "open"
-        existing[:failures] = (existing[:failures] || 0) + 1
-        existing[:last_failure] = Time.now.utc.iso8601
-        write_collection("circuits", circuits)
-      else
-        record = {
-          model: model,
-          state: "open",
-          failures: 1,
-          last_failure: Time.now.utc.iso8601,
-        }
-        append("circuits", record)
-      end
-    end
-
-    def reset!(model)
-      circuits = read_collection("circuits")
-      existing = circuits.find { |c| c[:model] == model }
-
-      return unless existing
-
-      existing[:state] = "closed"
-      existing[:failures] = 0
-      write_collection("circuits", circuits)
-    end
-
-    def increment_failure!(model)
-      circuits = read_collection("circuits")
-      existing = circuits.find { |c| c[:model] == model }
-
-      if existing
-        existing[:failures] = (existing[:failures] || 0) + 1
-        existing[:last_failure] = Time.now.utc.iso8601
-        # Keep state as-is (don't open yet)
-        write_collection("circuits", circuits)
-      else
-        record = {
-          model: model,
-          state: "closed",
-          failures: 1,
-          last_failure: Time.now.utc.iso8601,
-        }
-        append("circuits", record)
-      end
-    end
-
-    # --- Sessions ---
-    def save_session(id:, data:)
-      sessions = read_collection("sessions")
-      existing = sessions.find { |s| s[:id] == id }
-      now = Time.now.utc.iso8601
-
-      if existing
-        existing[:data] = data
-        existing[:updated_at] = now
-        write_collection("sessions", sessions)
-      else
-        record = { id: id, data: data, created_at: now, updated_at: now }
-        append("sessions", record)
-      end
-    end
-
-    def load_session(id)
-      sessions = read_collection("sessions")
-      session = sessions.find { |s| s[:id] == id }
-      session&.dig(:data)
-    end
-
-    # --- Patterns ---
-    def patterns(category = nil)
-      all = read_collection("patterns")
-      return all unless category
-
-      all.select { |p| p[:category] == category }
-    end
-
-    def add_pattern(category:, pattern:, replacement: nil, description: nil)
-      record = {
-        category: category,
-        pattern: pattern,
-        replacement: replacement,
-        description: description,
-      }
-      append("patterns", record.compact)
-    end
-
-    # --- Models ---
-    def models
-      read_collection("models")
-    end
-
-    def add_model(name:, tier:, rate_in:, rate_out:)
-      record = { name: name, tier: tier, rate_in: rate_in, rate_out: rate_out }
-      append("models", record)
+    # Log an error to the errors collection
+    # @param context [String] Error context identifier
+    # @param error [String] Error message
+    # @param extra [Hash] Additional error metadata
+    # @return [Hash] Created error record
+    def log_error(context:, error:, **extra)
+      record = { context: context, error: error, time: Time.now.utc.iso8601 }.merge(extra)
+      append("errors", record)
     end
 
     private
@@ -220,9 +149,10 @@ module MASTER
     def write_collection(name, data)
       path = file_path(name)
       temp_path = "#{path}.tmp"
-      
+
       synchronize do
         File.open(temp_path, "w") do |f|
+          f.flock(File::LOCK_EX)
           data.each { |item| f.puts(JSON.generate(item)) }
         end
         File.rename(temp_path, path)
@@ -232,7 +162,10 @@ module MASTER
     def append(collection, record)
       path = file_path(collection)
       synchronize do
-        File.open(path, "a") { |f| f.puts(JSON.generate(record)) }
+        File.open(path, "a") do |f|
+          f.flock(File::LOCK_EX)
+          f.puts(JSON.generate(record))
+        end
       end
       record
     end
@@ -246,28 +179,41 @@ module MASTER
 
     def seed_axioms
       return unless read_collection("axioms").empty?
-      default_axioms = [
-        { name: "SRP", description: "Single Responsibility Principle", category: "solid" },
-        { name: "OCP", description: "Open/Closed - open for extension, closed for modification", category: "solid" },
-        { name: "DRY", description: "Don't Repeat Yourself", category: "core" },
-        { name: "KISS", description: "Keep It Simple - reduce complexity, preserve UI/UX", category: "core", scope: "internal_logic" },
-        { name: "small_files", description: "Files under 300 lines", category: "style" },
-        { name: "NN/g", description: "Follow Nielsen Norman Group usability heuristics", category: "ux" },
-      ]
-      default_axioms.each { |a| add_axiom(**a) }
+
+      axioms_file = File.join(MASTER.root, "data", "axioms.yml")
+      unless File.exist?(axioms_file)
+        Logging.error("CRITICAL: axioms.yml not found at #{axioms_file}")
+        raise "axioms.yml not found - cannot initialize MASTER2"
+      end
+
+      axioms_data = YAML.safe_load_file(axioms_file, symbolize_names: true)
+      axioms_data.each do |axiom|
+        add_axiom(
+          name: axiom[:id] || axiom[:name],
+          description: axiom[:statement] || axiom[:description],
+          category: axiom[:category] || "core"
+        )
+      end
     end
 
     def seed_council
       return unless read_collection("council").empty?
-      default_council = [
-        { name: "Architect", role: "system_design", style: "formal", bias: "structure" },
-        { name: "Skeptic", role: "devil_advocate", style: "critical", bias: "caution" },
-        { name: "Pragmatist", role: "implementation", style: "direct", bias: "shipping" },
-        { name: "Security", role: "security_review", style: "paranoid", bias: "safety" },
-        { name: "User", role: "ux_advocate", style: "empathetic", bias: "usability" },
-        { name: "Mentor", role: "code_review", style: "teaching", bias: "clarity" },
-      ]
-      default_council.each { |c| add_persona(**c) }
+
+      council_file = File.join(MASTER.root, "data", "council.yml")
+      unless File.exist?(council_file)
+        Logging.error("CRITICAL: council.yml not found at #{council_file}")
+        raise "council.yml not found - cannot initialize MASTER2"
+      end
+
+      council_data = YAML.safe_load_file(council_file, symbolize_names: true)
+      council_data[:council]&.each do |member|
+        add_persona(
+          name: member[:name],
+          role: member[:slug],
+          style: "weight: #{member[:weight]}, temp: #{member[:temperature]}",
+          bias: member[:veto] ? "veto" : "advisory"
+        )
+      end
     end
   end
 end

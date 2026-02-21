@@ -19,15 +19,14 @@ class TestLLM < Minitest::Test
     rate = MASTER::LLM.model_rates["deepseek/deepseek-r1"]
     assert rate[:in], "Rate should have :in price"
     assert rate[:out], "Rate should have :out price"
-    assert rate[:tier], "Rate should have :tier"
   end
 
   def test_failures_before_trip
-    assert_equal 3, MASTER::LLM::FAILURES_BEFORE_TRIP
+    assert_equal 3, MASTER::CircuitBreaker::FAILURES_BEFORE_TRIP
   end
 
   def test_spending_cap
-    assert_equal 10.0, MASTER::LLM::SPENDING_CAP
+    assert_equal Float::INFINITY, MASTER::LLM.spending_cap
   end
 
   def test_circuit_closed_when_no_failures
@@ -36,7 +35,7 @@ class TestLLM < Minitest::Test
 
   def test_budget_remaining
     initial = MASTER::LLM.budget_remaining
-    assert_equal MASTER::LLM::SPENDING_CAP, initial
+    assert_equal Float::INFINITY, initial
   end
 
   def test_tier_with_full_budget
@@ -45,14 +44,42 @@ class TestLLM < Minitest::Test
   end
 
   def test_select_model
-    model = MASTER::LLM.pick
+    model = MASTER::LLM.select_model
     assert model, "Should pick a model"
     assert model.is_a?(String), "Model should be a string ID"
   end
 
   def test_record_cost
     cost = MASTER::LLM.record_cost(model: "deepseek/deepseek-r1", tokens_in: 1000, tokens_out: 500)
-    assert cost > 0, "Cost should be positive"
-    assert MASTER::LLM.budget_remaining < MASTER::LLM::SPENDING_CAP, "Budget should decrease"
+    assert_equal 0.0, cost, "Cost should be 0.0 (budget tracking removed)"
+    assert_equal Float::INFINITY, MASTER::LLM.budget_remaining, "Budget should remain infinity"
+  end
+
+  def test_force_model
+    test_model = "deepseek/deepseek-r1"
+    MASTER::LLM.force_model!(test_model)
+    
+    assert MASTER::LLM.model_forced?, "Model should be marked as forced"
+    assert_equal test_model, MASTER::LLM.forced_model, "Forced model should be set"
+    assert_equal :fast, MASTER::LLM.forced_tier, "Forced tier should be classified"
+  end
+
+  def test_clear_forced_model
+    test_model = "deepseek/deepseek-r1"
+    MASTER::LLM.force_model!(test_model)
+    assert MASTER::LLM.model_forced?, "Model should be forced before clearing"
+    
+    MASTER::LLM.clear_forced_model!
+    
+    refute MASTER::LLM.model_forced?, "Model should not be forced after clearing"
+    assert_nil MASTER::LLM.forced_model, "Forced model should be nil"
+    assert_nil MASTER::LLM.forced_tier, "Forced tier should be nil"
+  end
+
+  def test_model_forced_returns_correct_value
+    refute MASTER::LLM.model_forced?, "Model should not be forced initially"
+    
+    MASTER::LLM.force_model!("deepseek/deepseek-r1")
+    assert MASTER::LLM.model_forced?, "Model should be forced after force_model!"
   end
 end

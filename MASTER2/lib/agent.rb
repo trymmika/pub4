@@ -1,6 +1,15 @@
 # frozen_string_literal: true
 
 require "securerandom"
+require "timeout"
+require 'yaml'
+require 'fileutils'
+require 'set'
+
+require_relative "agent/pool"
+require_relative "agent/firewall"
+require_relative "agent/policy"
+require_relative "agent/autonomy"
 
 module MASTER
   class Agent
@@ -26,11 +35,15 @@ module MASTER
     end
 
     def run
+      Logging.dmesg_log('agent', message: 'ENTER agent.run')
       @status = :running
       @started_at = Time.now
 
       puts "agent0 at master0: #{@id} (parent:#{@parent_id}, scope:#{@scope}, " \
            "budget:$#{format('%.2f', @budget)})"
+
+      # Set per-agent budget in thread-local storage for enforcement
+      LLM.set_agent_budget(@budget) if defined?(LLM)
 
       pipeline = Pipeline.new
       @result = pipeline.call(@task)

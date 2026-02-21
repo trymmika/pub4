@@ -9,6 +9,8 @@ module MASTER
   module Weaviate
     extend self
 
+    NOT_AVAILABLE = "Weaviate not available.".freeze
+
     HOST = ENV['WEAVIATE_HOST'] || 'localhost'
     PORT = (ENV['WEAVIATE_PORT'] || 8080).to_i
     SCHEME = ENV['WEAVIATE_SCHEME'] || 'http'
@@ -16,10 +18,14 @@ module MASTER
 
     CLASS_NAME = 'MasterMemory'
 
+    # Retry configuration
+    MAX_RETRIES = 3
+    RETRY_BACKOFF_BASE = 2  # seconds, exponential
+
     class << self
       def available?
         health_check
-      rescue StandardError
+      rescue StandardError => e
         false
       end
 
@@ -27,14 +33,14 @@ module MASTER
         uri = URI("#{base_url}/v1/.well-known/ready")
         request = Net::HTTP::Get.new(uri)
         add_auth_headers(request)
-        
+
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl = (uri.scheme == 'https')
         http.open_timeout = 5
         http.read_timeout = 10
         response = http.request(request)
         response.is_a?(Net::HTTPSuccess)
-      rescue StandardError
+      rescue StandardError => e
         false
       end
 
@@ -60,8 +66,86 @@ module MASTER
         post('/v1/schema', schema)
       end
 
+      # Create a custom schema class
+      def create_schema(schema_def)
+        return Result.err(NOT_AVAILABLE) unless available?
+
+        response = post('/v1/schema', schema_def)
+
+        if response['error']
+          Result.err("Failed to create schema: #{response['error']}")
+        else
+          Result.ok({ class: schema_def[:class] })
+        end
+      rescue StandardError => e
+        Result.err("Schema creation failed: #{e.message}")
+      end
+
+      # Index an object in a specific class
+      def index(class_name, properties, vector: nil)
+        return Result.err(NOT_AVAILABLE) unless available?
+
+        object = {
+          class: class_name,
+          properties: properties
+        }
+        object[:vector] = vector if vector
+
+        response = post('/v1/objects', object)
+
+        if response['id']
+          Result.ok({ id: response['id'] })
+        else
+          Result.err("Failed to index: #{response['error'] || 'unknown error'}")
+        end
+      rescue StandardError => e
+        Result.err("Index failed: #{e.message}")
+      end
+
+      # Search in a specific class
+      def search_class(class_name, query:, limit: 10, filters: {})
+        return Result.err(NOT_AVAILABLE) unless available?
+
+        filter_clause = if filters.any?
+          filter_conditions = filters.map do |field, value|
+            "path: [\"#{field}\"], operator: Equal, valueString: \"#{value}\""
+          end.join(', ')
+          ", where: { #{filter_conditions} }"
+        else
+          ""
+        end
+
+        gql = <<~GQL
+          {
+            Get {
+              #{class_name}(
+                nearText: { concepts: ["#{query.gsub('"', '\\"')}"] }
+                limit: #{limit}
+                #{filter_clause}
+              ) {
+                _additional {
+                  distance
+                  id
+                }
+              }
+            }
+          }
+        GQL
+
+        response = post('/v1/graphql', { query: gql })
+
+        if response.dig('data', 'Get', class_name)
+          results = response['data']['Get'][class_name]
+          Result.ok(results)
+        else
+          Result.err("Search failed: #{response['errors']&.first&.dig('message') || 'unknown'}")
+        end
+      rescue StandardError => e
+        Result.err("Search failed: #{e.message}")
+      end
+
       def store(content:, type: 'chat', source: nil, metadata: {})
-        return Result.err("Weaviate not available") unless available?
+        return Result.err(NOT_AVAILABLE) unless available?
 
         object = {
           class: CLASS_NAME,
@@ -81,12 +165,12 @@ module MASTER
         else
           Result.err("Failed to store: #{response['error'] || 'unknown error'}")
         end
-      rescue => e
+      rescue StandardError => e
         Result.err("Store failed: #{e.message}")
       end
 
       def search(query:, limit: 5, type: nil)
-        return Result.err("Weaviate not available") unless available?
+        return Result.err(NOT_AVAILABLE) unless available?
 
         gql = build_search_query(query, limit, type)
         response = post('/v1/graphql', { query: gql })
@@ -104,7 +188,7 @@ module MASTER
         else
           Result.err("Search failed: #{response['errors']&.first&.dig('message') || 'unknown'}")
         end
-      rescue => e
+      rescue StandardError => e
         Result.err("Search failed: #{e.message}")
       end
 
@@ -124,7 +208,7 @@ module MASTER
 
         response = http.request(request)
         response.is_a?(Net::HTTPSuccess)
-      rescue StandardError
+      rescue StandardError => e
         false
       end
 
@@ -139,10 +223,10 @@ module MASTER
         request['Authorization'] = "Bearer #{API_KEY}" if API_KEY
       end
 
-      def post(path, body, retries: 3)
+      def post(path, body, retries: MAX_RETRIES)
         uri = URI("#{base_url}#{path}")
         last_error = nil
-        
+
         retries.times do |attempt|
           begin
             http = Net::HTTP.new(uri.host, uri.port)
@@ -160,10 +244,10 @@ module MASTER
             return { 'error' => response&.body || 'Parse error' }
           rescue Net::OpenTimeout, Net::ReadTimeout, Errno::ECONNREFUSED => e
             last_error = e.message
-            sleep(2 ** attempt) if attempt < retries - 1
+            sleep(RETRY_BACKOFF_BASE ** attempt) if attempt < retries - 1
           end
         end
-        
+
         { 'error' => "Failed after #{retries} retries: #{last_error}" }
       end
 

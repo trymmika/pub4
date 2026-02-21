@@ -1,119 +1,136 @@
 # frozen_string_literal: true
 
 module MASTER
-  VERSION = "1.0.0"
+  VERSION = "2.0.0"
   def self.root = File.expand_path("..", __dir__)
+
+  # Safe require helper for optional dependencies
+  def self.safe_require(path, label: nil)
+    require_relative path
+  rescue LoadError, StandardError => e
+    name = label || File.basename(path)
+    warn "MASTER: #{name} unavailable (#{e.message})"
+    Logging.warn("#{name} unavailable", error: e.message) if defined?(Logging)
+  end
 end
 
 require "fileutils"
+require "time"
+require "shellwords"
 
-# Auto-install missing gems first
+require_relative "utils"
+require_relative "decision_engine"
+require_relative "syntax_validator"
+require_relative "paths"
+require_relative "platform_check"
+require_relative "single_instance"
+require_relative "text_hygiene"
+require_relative "command_registry"
 require_relative "auto_install"
-MASTER::AutoInstall.install_gems if MASTER::AutoInstall.missing_gems.any?
+require_relative "boot"
 
 # Core
-require_relative "utils"
-require_relative "paths"
 require_relative "result"
 require_relative "logging"
 require_relative "db_jsonl"
 require_relative "llm"
-require_relative "memory"
+require_relative "personas"
 require_relative "session"
 require_relative "pledge"
+require_relative "rubocop_detector"
+
+# Multi-language parsing and NLU (optional)
+%w[../../lib/parser/multi_language ../../lib/nlu ../../lib/conversation].each do |dep|
+  MASTER.safe_require(dep)
+end
 
 # Safe Autonomy Architecture
-require_relative "constitution"
 require_relative "staging"
 
 # UI & NN/g compliance
 require_relative "ui"
-require_relative "help"
-require_relative "axiom_stats"
-require_relative "autocomplete"
-require_relative "progress"
 require_relative "undo"
-require_relative "dashboard"
 require_relative "commands"
-require_relative "keybindings"
-require_relative "confirmations"
-require_relative "error_suggestions"
-require_relative "nng_checklist"
-require_relative "onboarding"
-require_relative "context_window"
 
-# Executor (ReAct pattern - default behavior)
+# Pipeline stages
+require_relative "stages"
+
+# Executor
 require_relative "executor"
 
 # Pipeline
-require_relative "boot"
-require_relative "stages"
 require_relative "pipeline"
 require_relative "hooks"
-require_relative "convergence"
 require_relative "questions"
+require_relative "workflow"
+
+# Proactive autonomy (stolen from OpenClaw)
+require_relative "heartbeat"
+require_relative "scheduler"
+require_relative "triggers"
 
 # Deliberation engines
 require_relative "chamber"
-require_relative "swarm"
 
 # Tools
 require_relative "shell"
-require_relative "introspection"
+require_relative "analysis"
 require_relative "problem_solver"
 require_relative "evolve"
-require_relative "converge"
-require_relative "momentum"
-require_relative "validator"
-require_relative "self_map"
-require_relative "file_hygiene"
-require_relative "planner_helper"
+require_relative "queue"
+require_relative "harvester"
 
-# Auto-fixer (restored from MASTER)
-require_relative "auto_fixer"
-
-# Web browsing (restored from MASTER)
+# Web browsing
 require_relative "web"
 
-# Speech (unified TTS - replaces edge_tts, piper_tts, stream_tts, tts)
+# Speech
 require_relative "speech"
 
+# Media generation and post-processing bridges
+require_relative "bridges"
+
 # External services
-require_relative "weaviate"
-require_relative "replicate"
+%w[weaviate replicate cinematic semantic_cache].each do |mod|
+  MASTER.safe_require(mod)
+end
 
 # Agents
 require_relative "agent"
-require_relative "agent_pool"
-require_relative "agent_firewall"
 
 # Meta/Self-improvement
-require_relative "code_review"
-require_relative "llm_friendly"
+require_relative "review"
 require_relative "learnings"
-require_relative "enforcement"
-require_relative "language_axioms"
 require_relative "file_processor"
 require_relative "reflow"
-require_relative "self_test"
-require_relative "audit"
-require_relative "confirmation_gate"
-require_relative "cross_ref"
-require_relative "self_repair"
-require_relative "learning_feedback"
-require_relative "learning_quality"
+require_relative "multi_refactor"
 
-# Quality & Analysis (restored from MASTER)
-require_relative "violations"
-require_relative "smells"
-require_relative "bug_hunting"
-require_relative "dmesg"
-require_relative "planner"
-require_relative "self_critique"
-require_relative "reflection_memory"
+# Generators
+require_relative "html_generator"
 
-# Quality gates (restored from MASTER)
-require_relative "framework/quality_gates"
+# Quality gates
+require_relative "quality_gates"
 
 # Web UI
-require_relative "server"
+%w[server].each do |mod|
+  MASTER.safe_require(mod)
+end
+
+# Boot-time self-check
+if ENV["MASTER_SELF_CHECK"] == "true" && defined?(MASTER::Enforcement)
+  Thread.new do
+    sleep (ENV["MASTER_SELF_CHECK_DELAY"] || "1").to_i
+    begin
+      MASTER::Enforcement.self_check!
+    rescue StandardError => e
+      warn "MASTER: self_check! failed (#{e.message})"
+    end
+  end
+end
+
+# Boot-time proactive autonomy setup
+if ENV["MASTER_HEARTBEAT"] == "true"
+  MASTER::Triggers.install_defaults
+  MASTER::Scheduler.load
+  MASTER::Heartbeat.register("scheduler") { MASTER::Scheduler.tick }
+  MASTER::Heartbeat.start(interval: (ENV["MASTER_HEARTBEAT_INTERVAL"] || "60").to_i)
+end

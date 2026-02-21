@@ -2,7 +2,7 @@
 
 module MASTER
   # Reflow - Reorder any code or content by importance and chronology
-  # Part of 4-phase file processing: Clean → Rename/Rephrase → Structural Transform → Expand/Contract
+  # Part of 4-phase file processing: Clean -> Rename/Rephrase -> Structural Transform -> Expand/Contract
   module Reflow
     # Universal ordering principles (language-agnostic)
     IMPORTANCE_ORDER = [
@@ -19,7 +19,6 @@ module MASTER
     # Language detection patterns
     LANGUAGE_PATTERNS = {
       ruby: /\.rb$/,
-      python: /\.py$/,
       javascript: /\.(js|jsx|mjs)$/,
       typescript: /\.(ts|tsx)$/,
       go: /\.go$/,
@@ -93,7 +92,6 @@ module MASTER
       def extract_sections(content, lang)
         case lang
         when :ruby then extract_ruby_sections(content)
-        when :python then extract_python_sections(content)
         when :javascript, :typescript then extract_js_sections(content)
         when :go then extract_go_sections(content)
         when :markdown then extract_markdown_sections(content)
@@ -122,40 +120,13 @@ module MASTER
                  end
 
           if type && type != current[:type]
-            sections << current unless current[:lines].empty?
+            add_section(sections, current)
             current = { type: type, lines: [] }
           end
           current[:lines] << line
         end
 
-        sections << current unless current[:lines].empty?
-        sections
-      end
-
-      def extract_python_sections(content)
-        sections = []
-        current = { type: :unknown, lines: [] }
-
-        content.each_line do |line|
-          type = case line.strip
-                 when /^#!/ then :meta
-                 when /^#.*coding[:=]/ then :meta
-                 when /^(from|import)\s/ then :imports
-                 when /^[A-Z][A-Z0-9_]*\s*=/ then :constants
-                 when /^class\s/ then :types
-                 when /^def\s+_[^_]/ then :private
-                 when /^def\s/ then :public_api
-                 else nil
-                 end
-
-          if type && type != current[:type]
-            sections << current unless current[:lines].empty?
-            current = { type: type, lines: [] }
-          end
-          current[:lines] << line
-        end
-
-        sections << current unless current[:lines].empty?
+        add_section(sections, current)
         sections
       end
 
@@ -177,13 +148,13 @@ module MASTER
                  end
 
           if type && type != current[:type]
-            sections << current unless current[:lines].empty?
+            add_section(sections, current)
             current = { type: type, lines: [] }
           end
           current[:lines] << line
         end
 
-        sections << current unless current[:lines].empty?
+        add_section(sections, current)
         sections
       end
 
@@ -203,18 +174,18 @@ module MASTER
                  end
 
           if type && type != current[:type]
-            sections << current unless current[:lines].empty?
+            add_section(sections, current)
             current = { type: type, lines: [] }
           end
           current[:lines] << line
         end
 
-        sections << current unless current[:lines].empty?
+        add_section(sections, current)
         sections
       end
 
       def extract_markdown_sections(content)
-        # For markdown: frontmatter → h1 → h2 → h3 → content
+        # For markdown: frontmatter -> h1 -> h2 -> h3 -> content
         sections = []
         current = { type: :unknown, lines: [] }
         in_frontmatter = false
@@ -235,13 +206,13 @@ module MASTER
           end
 
           if type && type != current[:type]
-            sections << current unless current[:lines].empty?
+            add_section(sections, current)
             current = { type: type, lines: [] }
           end
           current[:lines] << line
         end
 
-        sections << current unless current[:lines].empty?
+        add_section(sections, current)
         sections
       end
 
@@ -258,13 +229,13 @@ module MASTER
                  end
 
           if type && type != current[:type]
-            sections << current unless current[:lines].empty?
+            add_section(sections, current)
             current = { type: type, lines: [] }
           end
           current[:lines] << line
         end
 
-        sections << current unless current[:lines].empty?
+        add_section(sections, current)
         sections
       end
 
@@ -292,6 +263,11 @@ module MASTER
       def needs_blank_line?(prev_section, curr_section)
         return false unless prev_section
         prev_section[:type] != curr_section[:type]
+      end
+
+      # Helper to add section to list only if it has content
+      def add_section(sections, section)
+        sections << section unless section[:lines].empty?
       end
     end
   end

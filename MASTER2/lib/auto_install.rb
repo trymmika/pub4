@@ -4,6 +4,7 @@ module MASTER
   module AutoInstall
     GEMS = %w[
       ruby_llm
+      stoplight
       tty-reader
       tty-prompt
       tty-spinner
@@ -42,8 +43,20 @@ module MASTER
 
         puts "Installing #{missing.size} gems..." if verbose
         missing.each do |gem|
-          system("gem install #{gem} --no-document")
+          next unless gem.match?(/\A[a-z0-9_-]+\z/)
+          system("gem", "install", gem, "--no-document")
         end
+      end
+
+      def require_gem(name)
+        require name
+      rescue LoadError
+        return if @installed&.dig(name)
+        return unless name.to_s.match?(/\A[a-z0-9_-]+\z/)
+        @installed ||= {}
+        $stderr.puts "Installing #{name}..."
+        @installed[name] = system("gem", "install", name, "--no-document")
+        require name
       end
 
       def openbsd?
@@ -65,7 +78,8 @@ module MASTER
         return if missing.empty?
 
         puts "Installing #{missing.size} packages..." if verbose
-        system("doas pkg_add #{missing.join(' ')}")
+        valid_packages = missing.select { |p| p.match?(/\A[a-z0-9_-]+\z/) }
+        system("doas", "pkg_add", *valid_packages) unless valid_packages.empty?
       end
 
       def setup(verbose: false)

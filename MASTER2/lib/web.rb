@@ -1,228 +1,178 @@
 # frozen_string_literal: true
 
+require "net/http"
+require "uri"
+
 module MASTER
-  # Web - Browser automation with Ferrum, fallback to curl
+  # Web - Browse and fetch web content with LLM-powered automation
+  # Security: Uses nokogiri for safe HTML parsing (prevents ReDoS)
   # Features: Dynamic CSS selector discovery via LLM
   module Web
+    extend self
+
+    MAX_CONTENT_LENGTH = 5000
     MAX_PREVIEW_LENGTH = 2000
     BROWSER_LOAD_DELAY = 2
-    CURL_TIMEOUT = 10
     MAX_HTML_FOR_DISCOVERY = 5000
 
-    class << self
-      def browse(url)
-        return Result.err("Empty URL") if url.nil? || url.strip.empty?
+    # Timeout constants (from timeouts.rb)
+    WEB_TIMEOUT = (ENV['MASTER_WEB_TIMEOUT'] || 30).to_i
+    HTTP_OPEN_TIMEOUT = (ENV['MASTER_HTTP_OPEN_TIMEOUT'] || 10).to_i
 
-        ferrum_browse(url)
-      rescue LoadError
-        curl_browse(url)
-      rescue StandardError => e
-        Result.err("Browse failed: #{e.message}")
+    def browse(url)
+      uri = URI(url)
+      http = Net::HTTP.new(uri.hostname, uri.port)
+      http.use_ssl = uri.scheme == "https"
+      http.open_timeout = HTTP_OPEN_TIMEOUT
+      http.read_timeout = WEB_TIMEOUT
+
+      response = http.request(Net::HTTP::Get.new(uri))
+
+      if response.code.start_with?("2")
+        # Use nokogiri for safe HTML parsing
+        text = extract_text(response.body)
+
+        Result.ok(content: text[0, MAX_CONTENT_LENGTH], url: url, status: response.code)
+      else
+        Result.err("HTTP #{response.code} for #{url}")
       end
-
-      def discover_selector(url, action)
-        require "ferrum"
-
-        browser = Ferrum::Browser.new(headless: true, timeout: 30)
-        page = browser.create_page
-        page.go_to(url)
-        sleep BROWSER_LOAD_DELAY
-
-        html_snippet = page.body[0..MAX_HTML_FOR_DISCOVERY]
-        screenshot_b64 = page.screenshot(format: :png, encoding: :base64) rescue nil
-
-        browser.quit
-
-        prompt = <<~PROMPT
-          Analyze this webpage to find the CSS selector for: #{action}
-          
-          HTML (truncated):
-          #{html_snippet}
-          
-          Return ONLY the CSS selector, nothing else.
-          Example: button.submit-btn, input#search, div.login-form
-        PROMPT
-
-        result = LLM.ask(prompt, tier: :fast)
-        return nil unless result.ok?
-
-        selector = result.value[:content].to_s.strip.split("\n").first
-        return nil if selector.nil? || selector.empty?
-        selector.strip.gsub(/^['"`]|['"`]$/, "")
-      rescue Ferrum::TimeoutError
-        nil
-      rescue StandardError
-        nil
-      end
-
-      def click(url, action)
-        require "ferrum"
-
-        selector = discover_selector(url, action)
-        return Result.err("Could not find selector for: #{action}") unless selector
-
-        browser = Ferrum::Browser.new(headless: true, timeout: 30)
-        page = browser.create_page
-        page.go_to(url)
-        sleep BROWSER_LOAD_DELAY
-
-        element = page.at_css(selector)
-        return Result.err("Element not found: #{selector}") unless element
-
-        element.click
-        sleep 1
-
-        result_html = page.body[0..MAX_PREVIEW_LENGTH]
-        browser.quit
-
-        Result.ok(selector: selector, result: result_html)
-      rescue LoadError
-        Result.err("Ferrum not available - install with: gem install ferrum")
-      rescue Ferrum::TimeoutError
-        Result.err("Browser timeout")
-      rescue StandardError => e
-        Result.err("Click failed: #{e.message}")
-      end
-
-      def fill(url, action, value)
-        require "ferrum"
-
-        selector = discover_selector(url, action)
-        return Result.err("Could not find selector for: #{action}") unless selector
-
-        browser = Ferrum::Browser.new(headless: true, timeout: 30)
-        page = browser.create_page
-        page.go_to(url)
-        sleep BROWSER_LOAD_DELAY
-
-        element = page.at_css(selector)
-        return Result.err("Element not found: #{selector}") unless element
-
-        element.focus.type(value)
-        sleep 0.5
-
-        browser.quit
-        Result.ok(selector: selector, filled: value)
-      rescue LoadError
-        Result.err("Ferrum not available")
-      rescue Ferrum::TimeoutError
-        Result.err("Browser timeout")
-      rescue StandardError => e
-        Result.err("Fill failed: #{e.message}")
-      end
-
-      def screenshot(url, path: nil)
-        require "ferrum"
-
-        browser = Ferrum::Browser.new(headless: true, timeout: 30)
-        page = browser.create_page
-        page.go_to(url)
-        sleep BROWSER_LOAD_DELAY
-
-        path ||= File.join(MASTER.root, "var", "screenshots", "#{Time.now.to_i}.png")
-        FileUtils.mkdir_p(File.dirname(path))
-        page.screenshot(path: path)
-
-        browser.quit
-        Result.ok(path: path)
-      rescue LoadError
-        Result.err("Ferrum not available")
-      rescue Ferrum::TimeoutError
-        Result.err("Browser timeout")
-      rescue StandardError => e
-        Result.err("Screenshot failed: #{e.message}")
-      end
-
-      private
-
-      def ferrum_browse(url)
-        require "ferrum"
-
-        browser = Ferrum::Browser.new(headless: true, timeout: 30)
-        page = browser.create_page
-        page.go_to(url)
-        sleep BROWSER_LOAD_DELAY
-
-        text = page.body_text
-        browser.quit
-
-        Result.ok(url: url, content: text[0..MAX_PREVIEW_LENGTH])
-      rescue Ferrum::TimeoutError
-        curl_browse(url)
-      end
-
-      def curl_browse(url)
-        html = if RUBY_PLATFORM.include?("openbsd")
-                 `ftp -o - "#{url}" 2>/dev/null`
-               else
-                 `curl -sL --max-time #{CURL_TIMEOUT} "#{url}" 2>/dev/null`
-               end
-
-        html = `curl -sLk --max-time #{CURL_TIMEOUT} "#{url}" 2>/dev/null` if html.empty?
-
-        return Result.err("Failed to fetch: #{url}") if html.empty?
-
-        text = html.gsub(/<script[^>]*>.*?<\/script>/mi, "")
-                   .gsub(/<style[^>]*>.*?<\/style>/mi, "")
-                   .gsub(/<[^>]+>/, " ")
-                   .gsub(/\s+/, " ")
-                   .strip
-
-        Result.ok(url: url, content: text[0..MAX_PREVIEW_LENGTH])
-      end
+    rescue StandardError => e
+      Result.err("Browse failed: #{e.message}")
     end
 
-    module GitHub
-      SEARCH_URL = "https://github.com/search"
+    # JavaScript-rendered pages using Ferrum (optional)
+    def browse_js(url)
+      require "ferrum"
 
-      class << self
-        def search_repos(query, sort: "stars", limit: 10)
-          require "ferrum"
-          require "uri"
+      browser = Ferrum::Browser.new(headless: true, timeout: WEB_TIMEOUT)
+      browser.go_to(url)
+      browser.network.wait_for_idle
 
-          url = "#{SEARCH_URL}?q=#{URI.encode_www_form_component(query)}&type=repositories&s=#{sort}&o=desc"
+      text = extract_text(browser.body)
+      browser.quit
 
-          browser = Ferrum::Browser.new(headless: true)
-          page = browser.create_page
-          page.go_to(url)
-          sleep 3
+      Result.ok(content: text[0, MAX_CONTENT_LENGTH], url: url)
+    rescue LoadError
+      Result.err("Ferrum gem not available - install for JS-rendered pages.")
+    rescue StandardError => e
+      Result.err("Browse JS failed: #{e.message}")
+    ensure
+      browser&.quit rescue StandardError => e
+    end
 
-          text = page.body_text
-          repos = text.scan(%r{github\.com/([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)}).flatten.uniq.first(limit)
-          repos = repos.map { |r| "https://github.com/#{r}" }
+    # Dynamic CSS selector discovery using LLM + vision
+    # Instead of hardcoding selectors that break, ask LLM to find them
+    def discover_selector(url, action)
+      require "ferrum"
 
-          browser.quit
-          Result.ok(repos: repos)
-        rescue LoadError
-          Result.err("Ferrum not available")
-        rescue StandardError => e
-          Result.err("Search failed: #{e.message}")
-        end
+      browser = Ferrum::Browser.new(headless: true)
+      page = browser.create_page
+      page.go_to(url)
+      sleep BROWSER_LOAD_DELAY
 
-        def trending(language: nil, since: "daily")
-          require "ferrum"
+      html_snippet = page.body[0..MAX_HTML_FOR_DISCOVERY]
+      screenshot_b64 = page.screenshot(format: :png, encoding: :base64)
 
-          url = "https://github.com/trending"
-          url += "/#{language}" if language
-          url += "?since=#{since}"
+      browser.quit
 
-          browser = Ferrum::Browser.new(headless: true)
-          page = browser.create_page
-          page.go_to(url)
-          sleep 2
+      prompt = <<~PROMPT
+        Analyze this webpage to find the CSS selector for: #{action}
 
-          text = page.body_text
-          repos = text.scan(%r{([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)\s+\d+}).flatten.uniq.first(20)
-          repos = repos.map { |r| "https://github.com/#{r}" }
+        HTML (truncated):
+        #{html_snippet}
 
-          browser.quit
-          Result.ok(repos: repos)
-        rescue LoadError
-          Result.err("Ferrum not available")
-        rescue StandardError => e
-          Result.err("Trending failed: #{e.message}")
-        end
+        Return ONLY the CSS selector, nothing else.
+        Example: button.submit-btn, input#search, div.login-form
+      PROMPT
+
+      # Use vision model if possible for better accuracy
+      result = LLM.ask(prompt, tier: :fast)
+      return Result.err("LLM request failed.") unless result.ok?
+
+      # Clean up response - extract just the selector
+      selector = result.value[:content].to_s.strip.split("\n").first.to_s.strip
+      selector = selector.gsub(/^['"`]|['"`]$/, "") # Remove quotes
+
+      Result.ok(selector: selector)
+    rescue LoadError
+      Result.err("Ferrum not available - install gem 'ferrum' for browser automation.")
+    rescue StandardError => e
+      Result.err("Selector discovery failed: #{e.message}")
+    end
+
+    # Click an element discovered dynamically
+    def click_discovered(url, action)
+      selector_result = discover_selector(url, action)
+      return selector_result unless selector_result.ok?
+
+      selector = selector_result.value[:selector]
+
+      require "ferrum"
+      browser = Ferrum::Browser.new(headless: true)
+      page = browser.create_page
+      page.go_to(url)
+      sleep BROWSER_LOAD_DELAY
+
+      element = page.at_css(selector)
+      unless element
+        browser.quit
+        return Result.err("Element not found: #{selector}")
       end
+
+      element.click
+      sleep 1
+
+      result_html = page.body[0..MAX_PREVIEW_LENGTH]
+      browser.quit
+
+      Result.ok(selector: selector, result: result_html)
+    rescue LoadError
+      Result.err("Ferrum not available - install gem 'ferrum'.")
+    rescue StandardError => e
+      Result.err("Click failed: #{e.message}")
+    end
+
+    # Fill a form field discovered dynamically
+    def fill_discovered(url, action, value)
+      selector_result = discover_selector(url, action)
+      return selector_result unless selector_result.ok?
+
+      selector = selector_result.value[:selector]
+
+      require "ferrum"
+      browser = Ferrum::Browser.new(headless: true)
+      page = browser.create_page
+      page.go_to(url)
+      sleep BROWSER_LOAD_DELAY
+
+      element = page.at_css(selector)
+      unless element
+        browser.quit
+        return Result.err("Element not found: #{selector}")
+      end
+
+      element.focus.type(value)
+      sleep 0.5
+
+      browser.quit
+      Result.ok(selector: selector, filled: value)
+    rescue LoadError
+      Result.err("Ferrum not available - install gem 'ferrum'.")
+    rescue StandardError => e
+      Result.err("Fill failed: #{e.message}")
+    end
+
+    private
+
+    def extract_text(html)
+      require "nokogiri"
+
+      doc = Nokogiri::HTML(html)
+      doc.css("script, style").remove
+      text = doc.text.squeeze(" \n").strip
+      text
+    rescue LoadError
+      raise "nokogiri gem required for HTML parsing. Install with: gem install nokogiri"
     end
   end
 end

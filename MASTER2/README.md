@@ -1,198 +1,47 @@
-# MASTER
+# MASTER2 🌌
 
-LLM pipeline with adversarial council and axiom enforcement. Ruby. OpenBSD-native.
+MASTER2 is built for teams that want software to think before it edits. The project treats code quality as a living system, not a checklist, and it frames every change as a decision with consequences. Where many tools only lint surfaces, MASTER2 pushes into intent, risk, and structural coherence so that each run feels less like a script and more like a disciplined technical conversation.
 
-## Install
+# Vision
 
-```sh
-bundle install
-cp .env.example .env
-# Set OPENROUTER_API_KEY
-./bin/master
-```
+The vision is simple: make engineering feedback feel intelligent, immediate, and accountable. MASTER2 combines constitutional constraints, adversarial reasoning, and practical automation so that the system can challenge weak assumptions while still shipping useful work. It is opinionated about rigor, but it is designed to stay usable under real pressure, from quick refactors to larger autonomous runs.
 
-## Architecture
+# Architecture
 
-MASTER is a hybrid agent system with multiple execution patterns:
+At the core, MASTER2 is a Ruby system that routes tasks through a staged pipeline where each phase narrows uncertainty before execution. Intake captures the problem, guardrails evaluate risk, routing chooses strategy, debate pressure-tests assumptions, ask/refactor phases generate and apply changes, lint and syntax validation enforce quality boundaries, and rendering returns actionable output. This architecture is intentionally defensive, so the cost of bad edits stays low even when autonomy is turned up.
 
-### Execution Patterns (auto-selected)
+# Constitutional Engine ⚖️
 
-| Pattern | Use Case | Behavior |
-|---------|----------|----------|
-| **ReAct** | Exploration, unknown tasks | Tight thought→action→observation loop |
-| **Pre-Act** | Multi-step workflows | Plan all steps first, then execute (70% better recall) |
-| **ReWOO** | Cost-sensitive reasoning | Single LLM call with #E{n} placeholders |
-| **Reflexion** | Fix/debug/refactor | Execute → self-critique → retry if needed |
+Constitutional enforcement is the backbone of behavior. Axiom layers apply from literal patterns to deeper language and design constraints, and persona-driven review simulates healthy disagreement before a change is accepted. In practice, this means MASTER2 can reject technically valid but strategically poor edits, and it can surface concerns that ordinary static analysis misses, especially around maintainability, safety boundaries, and long-term readability.
 
-### Pipeline Stages
+# Autonomy and Control
 
-Seven stages, chained via Result monad:
+MASTER2 supports proactive operation through heartbeat scheduling, recurring jobs, and trigger-based loops, but it does so with strict containment. Circuit breakers, budget boundaries, and staged execution ensure that high autonomy does not become high entropy. The coordinator model enforces one primary instance by lock discipline, while allowing internal sub-agent scale where parallel exploration adds value.
 
-1. **Intake** — Parse input
-2. **Guard** — Block dangerous patterns
-3. **Route** — Select model by budget/tier
-4. **Debate** — Council deliberation (optional)
-5. **Ask** — Query LLM
-6. **Lint** — Axiom enforcement
-7. **Render** — Typography refinement
+# Interface and Cognitive Load 🧠
 
-First error short-circuits. No exceptions.
+The web interface follows a low-noise, high-signal design direction. The orb-centric renderer is not only decorative; it acts as a compact state surface for activity, intensity, and conversational flow. Recent refinements focus on semantic structure, denser meaning per frame, darker concentration around active thought regions, and reduced visual clutter so operators can track system behavior without scanning verbose control panels.
 
-## Features
+# Audio, Voice, and Interaction
 
-- **Auto-retry** with exponential backoff (3 attempts)
-- **Rate limiting** (30 requests/minute, $0.50 per-query cap)
-- **Circuit breaker** (3 failures → 5-minute cooldown)
-- **Session persistence** with crash recovery (SIGINT/SIGTERM auto-save)
-- **Pattern fallback** (if primary fails → react → direct)
+Voice and microphone pathways are treated as first-class interaction modes rather than novelty layers. The UI can react to microphone energy, run continuous speech recognition where browser support exists, and reflect conversational turns through dynamic visual response. This creates a tighter feedback loop between what the user says, what the system reasons about, and how the interface communicates confidence and load.
 
-## Axioms
+# Effects, Behavior, and History 🎛️
 
-Timeless rules from authoritative sources:
+MASTER2 has evolved from straightforward command orchestration toward a richer behavioral model where interface effects and reasoning effects are linked. Early iterations emphasized function coverage and command breadth, while later iterations emphasized coherence under stress, visual semantics, and operator trust. The result is a system where animation, tone, and decision routing are not isolated features but coordinated signals that communicate internal state over time.
 
-| Axiom | Source |
-|-------|--------|
-| DRY, KISS, POLA | Pragmatic Programmer |
-| SRP, OCP | SOLID / Clean Code |
-| Omit needless words | Strunk & White |
-| Typography hierarchy | Bringhurst |
-| Usability heuristics | Nielsen |
+# Platform Context
 
-**ABSOLUTE** axioms halt on violation. **PROTECTED** axioms warn.
+The project is designed to run across modern Ruby environments and gains additional confinement value in OpenBSD-oriented deployments through stronger sandbox primitives. Linux remains a practical primary target for many workflows, with the same constitutional and staging concepts preserved. This dual posture keeps the system portable while still rewarding hardened execution environments.
 
-### Language Axioms
+# Practical Outcome 🚀
 
-Language axioms are a comprehensive set of 41 timeless principles organized into 7 categories:
+In day-to-day use, MASTER2 helps teams move faster without lowering standards. It can accelerate refactors, enforce consistency, and keep risk visible while changes are still cheap to correct. The project is intentionally serious about quality, but it does not need to feel heavy; it aims for a professional workflow that is calm, readable, and occasionally fun.
 
-- **Engineering** (11) — Core software engineering principles (SRP, OCP, DRY, KISS, composability)
-- **Structural** (8) — Refactoring operations (merge, flatten, decouple, hoist)
-- **Process** (6) — Development workflow (test-first, one-change, measure-then-optimize)
-- **Communication** (4) — Code as literature (concise, self-explaining)
-- **Meta** (4) — Self-governance (show-cost-first, depth-on-demand)
-- **Resilience** (3) — Systems that survive (degrade-gracefully, expect-failure)
-- **Aesthetic** (5) — Beauty in craft (least-power, just-enough)
+# Video Walkthrough 🎬
 
-Each axiom includes:
-- **ID** — Unique identifier
-- **Title** — Short name
-- **Statement** — Actionable, validatable principle
-- **Source** — Authoritative reference (e.g., "The Pragmatic Programmer", "SOLID Principles")
-- **Category** — Logical grouping
-- **Protection Level** — ABSOLUTE (halt on violation) or PROTECTED (warn only)
+MASTER2 now includes a narrative-first video walkthrough path so newcomers can feel the intent quickly while still seeing real execution detail. The recommended structure starts with why the system exists, then shows the pipeline in motion, then demonstrates one practical refactor flow end to end, including safety boundaries and rollback posture. This keeps the story human while still proving technical depth.
 
-#### View Language Axioms Stats
+The recording script lives in `docs/video_narration.md` and is written to be read almost verbatim during capture. It is designed to preserve the essence of MASTER2 as a constitutional, adversarial, quality-first coding system while also covering concrete mechanics such as staged execution, pressure-tested outputs, single-instance coordination, and the orb-based low-noise interface.
 
-In the REPL, use the `axioms-stats` or `axioms` command:
-
-```
-master> axioms-stats
-Language Axioms Summary
-========================================
-
-Total axioms: 41
-
-By Category:
-  engineering          11
-  structural           8
-  process              6
-  aesthetic            5
-  communication        4
-  meta                 4
-  resilience           3
-
-By Protection Level:
-  PROTECTED            40
-  ABSOLUTE             1
-```
-
-#### Data Source
-
-Language axioms are stored in `data/axioms.yml` as a data-driven YAML file. Each entry follows a consistent structure:
-
-```yaml
-- id: "ONE_SOURCE"
-  category: "engineering"
-  protection: "PROTECTED"
-  title: "One Source of Truth"
-  statement: "Every piece of knowledge has exactly one authoritative representation."
-  source: "The Pragmatic Programmer"
-```
-
-To add new axioms, edit `data/axioms.yml` following the existing structure.
-
-## Council
-
-Twelve personas. Three hold veto:
-
-- **Security Officer** — Guards CIA triad
-- **The Attacker** — Finds exploits
-- **The Maintainer** — 3 AM debuggability
-
-Consensus requires 70% weighted agreement. Oscillation (25 rounds) halts system.
-
-## Self-Application
-
-> A system that asserts quality must achieve its own standards.
-
-Run `selftest` to pass MASTER through itself:
-- Static analysis
-- Axiom validation
-- Pipeline safety
-- Council review (LLM)
-
-If MASTER fails its own review, it has failed.
-
-## Commands
-
-```
-help          Show commands
-refactor      Multi-model file review
-chamber       Council deliberation
-ideate        Creative brainstorming (Chamber)
-evolve        Self-improvement cycle
-fix           Auto-fix code violations
-browse        Web browsing (Ferrum)
-speak         Text-to-speech (Piper/Edge/Replicate)
-model         Switch LLM model
-models        List available models
-pattern       Switch execution pattern (react/pre_act/rewoo/reflexion)
-patterns      List execution patterns
-opportunities Analyze codebase for improvements
-selftest      Run MASTER through itself
-axioms-stats  Show language axioms statistics
-session       Session management
-budget        Show remaining budget
-health        System health check
-```
-
-## Modes
-
-- **REPL**: `./bin/master`
-- **Pipe**: `echo '{"text":"..."}' | ./bin/master --pipe`
-- **Daemon**: `./sbin/agentd`
-
-## Budget
-
-$10.00 session limit. Three tiers:
-
-| Tier | Models |
-|------|--------|
-| strong | deepseek-r1, claude-sonnet-4 |
-| fast | deepseek-v3, gpt-4.1-mini |
-| cheap | gpt-4.1-nano |
-
-Circuit breaker trips after 3 failures. 5-minute cooldown.
-
-## Structure
-
-```
-bin/master       Entry point
-lib/             60+ modules
-data/            Axioms, council, patterns (YAML)
-var/db/          JSONL storage
-test/            Minitest suite (24 files, 100+ tests)
-```
-
-## License
-
-MIT
+When your video file is ready, place it at `media/master2_walkthrough.mp4` and link or embed it from this section so readers can move from concept to demonstration in one step.

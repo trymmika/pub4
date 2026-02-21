@@ -2,6 +2,7 @@
 
 require "yaml"
 require "timeout"
+require "rbconfig"
 
 module MASTER
   module Stages
@@ -17,18 +18,22 @@ module MASTER
     class Compress
       COMPRESSION_FILE = File.join(__dir__, "..", "data", "compression.yml")
 
-      def self.patterns
-        @patterns ||= load_patterns
-      end
+      class << self
+        # @return [Hash] Hash with :fillers and :phrases arrays
+        def patterns
+          @patterns ||= load_patterns
+        end
 
-      def self.load_patterns
-        return { fillers: [], phrases: [] } unless File.exist?(COMPRESSION_FILE)
+        # @return [Hash] Compiled regex patterns
+        def load_patterns
+          return { fillers: [], phrases: [] } unless File.exist?(COMPRESSION_FILE)
 
-        data = YAML.safe_load_file(COMPRESSION_FILE)
-        {
-          fillers: (data["fillers"] || []).map { |w| /\b#{Regexp.escape(w)}\b/i },
-          phrases: (data["phrases"] || []).map { |p| /#{Regexp.escape(p)}/i },
-        }
+          data = YAML.safe_load_file(COMPRESSION_FILE)
+          {
+            fillers: (data["fillers"] || []).map { |w| /\b#{Regexp.escape(w)}\b/i },
+            phrases: (data["phrases"] || []).map { |p| /#{Regexp.escape(p)}/i },
+          }
+        end
       end
 
       def call(input)
@@ -74,41 +79,28 @@ module MASTER
     # Stage 4: Route to model via circuit breaker + budget
     class Route
       def call(input)
-        text = input[:text] || ""
-        tier = LLM.tier
-        model = nil
-        
-        # Find an available model for the current tier
-        LLM::TIER_ORDER.each do |t|
-          LLM.model_tiers[t]&.each do |m|
-            if LLM.circuit_closed?(m)
-              model = m
-              break
-            end
-          end
-          break if model
+        # Respect forced model override (model command)
+        if LLM.model_forced?
+          model = LLM.forced_model
+          tier = LLM.classify_tier(model)
+        else
+          tier = LLM.tier
+          model = LLM.select_model(tier)
         end
-        
         return Result.err("All models unavailable.") unless model
-
-        Result.ok(input.merge(
-          model: model,
-          tier: tier,
-          budget_remaining: LLM.budget_remaining,
-        ))
+        Result.ok(input.merge(model: model, tier: tier))
       end
     end
 
-    # Stage 5: Adversarial council review (delegates to Chamber)
+    # Stage 5: Adversarial council review (delegates to Council)
     class Council
       def call(input)
-        return Result.ok(input) unless input[:council]
-
         text = input[:text] || ""
         model = input[:model]
         return Result.ok(input) unless model
 
-        review = Chamber.council_review(text, model: model)
+        # NOTE: model: param is accepted by Council.council_review but currently unused
+        review = MASTER::Council.council_review(text, model: model)
         Result.ok(input.merge(
           council_verdict: review[:verdict],
           council_vetoed: review[:vetoed_by].any?,
@@ -138,7 +130,7 @@ module MASTER
           tokens_out = data[:tokens_out] || 0
           cost = data[:cost] || 0
 
-          puts UI.dim("llm0: #{tokens_in}→#{tokens_out} tok, #{UI.currency_precise(cost)}")
+          puts UI.dim("llm0: #{tokens_in}->#{tokens_out} tok, #{UI.currency_precise(cost)}")
 
           Result.ok(input.merge(
             response: data[:content],
@@ -175,7 +167,18 @@ module MASTER
           end
         end
 
-        Result.ok(input.merge(axiom_violations: violations, linted: true))
+        # Run NNG usability heuristics check if enabled
+        design_violations = []
+        if ENV['MASTER_CHECK_DESIGN'] == 'true' && defined?(NNGChecklist)
+          result = NNGChecklist.validate(text)
+          design_violations = result.value if result.ok?
+        end
+
+        Result.ok(input.merge(
+          axiom_violations: violations,
+          design_violations: design_violations,
+          linted: true
+        ))
       end
     end
 
@@ -241,12 +244,15 @@ module MASTER
           f.write(code)
           f.flush
           begin
+            # WARNING: Pledge.pledge restricts the current process permanently.
+            # In IO.popen context, this affects the parent process, not just the child.
+            # On non-OpenBSD systems, this is a no-op.
             Pledge.unveil(f.path, "r")
             Pledge.pledge("stdio rpath")
-          rescue StandardError
+          rescue StandardError => e
             # Not on OpenBSD
           end
-          output = IO.popen(["ruby", f.path], err: %i[child out], &:read)
+          output = IO.popen([RbConfig::CONFIG['ruby_install_name'], f.path], err: %i[child out], &:read)
           { success: $CHILD_STATUS.success?, output: output, exit_code: $CHILD_STATUS.exitstatus }
         end
       end

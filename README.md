@@ -1,30 +1,11 @@
-# MASTER2 - Autonomous Code Refactoring Engine
+MASTER2 v1.0.0
 
-## Setup
-export GEM_HOME=\$(ruby -e'puts Gem.user_dir')
-export PATH="\$GEM_HOME/bin:\$PATH"
-gem install --user-install parser unparser diffy minitest dotenv sqlite3
+An AI that reviews its own code, argues with itself, and ships the result.
 
-export OPENROUTER_API_KEY=your_key
+Documentation in MASTER2/README.md
 
-## Commands
-- refactor <file> : Auto-refactor low-risk changes
-- analyze <file> : Get suggestions
-- self_refactor : Refactor lib/ files
-- auto_iterate : Iterative self-improvement (converges on no changes)
-- stats : Show monitoring stats
-- repl : Interactive
+Runs Ruby code through twelve adversarial personas enforcing thirty-two axioms from Clean Code and The Pragmatic Programmer. Seven stage pipeline. Four reasoning patterns. Ten dollar session cap. Circuit breaker. Rollback safety. Result monad. No exceptions. OpenBSD first.
 
-## Features
-- Ruby AST (parser/unparser)
-- JS/Python regex stubs
-- LLM analysis (Grok-4-fast)
-- Autonomy decisions
-- Persistence (SQLite)
-- Monitoring (tokens/cost)
-- Tools (shell/web search)
+Installation: cd MASTER2, bundle install, export OPENROUTER_API_KEY, run bin/master
 
-## Tests
-ruby -I lib test/full_test.rb
-
-Ready.
+MIT License
