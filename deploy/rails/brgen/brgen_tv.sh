@@ -16,7 +16,7 @@ APP_PORT=$((10000 + RANDOM % 10000))
 
 SCRIPT_DIR="${0:a:h}"
 
-source "${SCRIPT_DIR}/@shared_functions.sh"
+source "${SCRIPT_DIR}/../@shared_functions.sh"
 
 log "Starting Brgen TV setup with video streaming and live broadcasting"
 

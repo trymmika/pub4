@@ -16,7 +16,7 @@ readonly SERVER_IP="185.52.176.18"
 
 readonly APP_PORT=$((10000 + RANDOM % 10000))
 
-source "${SCRIPT_DIR}/@shared_functions.sh"
+source "${SCRIPT_DIR}/../@shared_functions.sh"
 
 setup_environment() {
 

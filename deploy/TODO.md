@@ -30,8 +30,9 @@
 
 ## P0 — BLOCKERS (nothing deploys until these are fixed)
 
-### P0.1 — Broken shared-library source path in every sub-directory app
-Every app in a subfolder does:
+### P0.1 — Broken shared-library source path in every sub-directory app — ✅ FIXED
+> Resolved: all 11 app scripts now source `${SCRIPT_DIR}/../@shared_functions.sh`.
+Every app in a subfolder did:
 ```zsh
 SCRIPT_DIR="${0:a:h}"                          # = deploy/rails/<app>/
 source "${SCRIPT_DIR}/@shared_functions.sh"    # looks in deploy/rails/<app>/  ← WRONG
