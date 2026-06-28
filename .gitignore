@@ -43,3 +43,6 @@ coverage/
 
 # Node modules (if any JS tooling)
 node_modules/
+
+MASTER/.env
+MASTER/.bashrc
