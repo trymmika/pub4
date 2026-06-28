@@ -1,132 +1,107 @@
 # frozen_string_literal: true
 
+require_relative '../pledge'
+
 module MASTER
-  # OpenBSD pledge and unveil integration for enhanced security
+  # OpenBSD pledge/unveil integration.
+  #
+  # This delegates to the real syscall wrapper in lib/pledge.rb (Fiddle -> libc).
+  # It does NOT pretend to apply security it isn't applying: off OpenBSD it is an
+  # honest no-op, and on OpenBSD the main-process pledge is opt-in via MASTER_PLEDGE=1
+  # until the promise/unveil set has been verified on-target, because an incorrect
+  # promise set aborts the process (SIGABRT) the moment it touches an unpledged
+  # operation. Child-process sandboxing (the safe place to pledge) lives in
+  # Stages::Execute, which already wraps an untrusted subprocess with Pledge.
   class OpenBSDPledge
-    # Standard pledge promises for different modes
+    # Promise sets. The CLI is interactive (tty-prompt), execs subprocesses, and
+    # talks to the network, so a usable profile must include tty/proc/exec/inet/dns.
     PROMISES = {
-      minimal: 'stdio',
-      read_only: 'stdio rpath',
-      network: 'stdio rpath wpath cpath inet dns',
-      full: 'stdio rpath wpath cpath inet dns proc exec'
+      minimal:   'stdio',
+      read_only: 'stdio rpath tty',
+      network:   'stdio rpath wpath cpath inet dns tty',
+      full:      'stdio rpath wpath cpath inet dns proc exec tty'
     }.freeze
-    
-    # Unveil paths for file system access
-    UNVEIL_PATHS = {
-      lib: { path: '/home/runner/work/pub4/pub4/lib', permissions: 'r' },
-      var: { path: '/home/runner/work/pub4/pub4/var', permissions: 'rwc' },
-      tmp: { path: '/tmp', permissions: 'rwc' },
-      home: { path: ENV['HOME'], permissions: 'rwc' }
-    }.freeze
-    
+
+    # Unveil paths derived from MASTER::ROOT (never hardcoded CI paths).
+    def self.unveil_paths
+      {
+        root: { path: MASTER::ROOT, permissions: 'rwc' },
+        tmp:  { path: '/tmp',       permissions: 'rwc' },
+        home: { path: ENV['HOME'],  permissions: 'rwc' }
+      }.compact
+    end
+
     class << self
-      # Apply pledge with given promises
+      def openbsd? = RUBY_PLATFORM.include?('openbsd')
+
+      # Apply pledge for the given mode. Returns true if actually applied.
+      # Raises nothing on non-OpenBSD; surfaces real failures visibly.
       def pledge(mode = :network)
-        return unless openbsd?
-        
+        return false unless openbsd? && Pledge.available?
+        unless ENV['MASTER_PLEDGE'] == '1'
+          log("pledge not applied (set MASTER_PLEDGE=1 to enable; promise set pending on-target verification)")
+          return false
+        end
         promises = PROMISES[mode] || mode.to_s
-        
-        begin
-          # On OpenBSD, would call: pledge(promises, nil)
-          # For now, just log what we would do
-          log_security_action("Would pledge: #{promises}")
-          true
-        rescue => e
-          warn "Pledge failed: #{e.message}"
-          false
+        Pledge.pledge(promises)
+        log("pledged: #{promises}")
+        true
+      rescue Pledge::Error => e
+        warn "pledge(2) failed: #{e.message}"
+        false
+      end
+
+      # Unveil filesystem paths, then implicitly lock by pledging without 'unveil'.
+      def unveil(paths = unveil_paths)
+        return false unless openbsd? && Pledge.available?
+        return false unless ENV['MASTER_PLEDGE'] == '1'
+        paths.each_value do |config|
+          next unless config[:path]
+          Pledge.unveil(config[:path], config[:permissions])
+          log("unveiled: #{config[:path]} (#{config[:permissions]})")
         end
+        true
+      rescue Pledge::Error => e
+        warn "unveil(2) failed: #{e.message}"
+        false
       end
-      
-      # Unveil filesystem paths
-      def unveil(paths = UNVEIL_PATHS)
-        return unless openbsd?
-        
-        paths.each do |name, config|
-          path = config[:path]
-          perms = config[:permissions]
-          
-          begin
-            # On OpenBSD, would call: unveil(path, perms)
-            log_security_action("Would unveil: #{path} (#{perms})")
-          rescue => e
-            warn "Unveil failed for #{path}: #{e.message}"
-          end
-        end
-        
-        # Lock unveil (no more paths can be unveiled)
-        begin
-          # On OpenBSD, would call: unveil(nil, nil)
-          log_security_action("Would lock unveil")
-          true
-        rescue => e
-          warn "Unveil lock failed: #{e.message}"
-          false
-        end
+
+      # Apply unveil then pledge (order matters: restrict fs before dropping unveil).
+      def secure(mode = :network, paths = unveil_paths)
+        unveil(paths)
+        pledge(mode)
       end
-      
-      # Apply both pledge and unveil
-      def secure(mode = :network, paths = UNVEIL_PATHS)
-        unveil(paths) && pledge(mode)
-      end
-      
-      # Check if running on OpenBSD
-      def openbsd?
-        RUBY_PLATFORM =~ /openbsd/
-      end
-      
-      # Get current security status
+
       def status
         {
           platform: RUBY_PLATFORM,
           openbsd: openbsd?,
-          pledge_available: openbsd?,
-          unveil_available: openbsd?,
+          syscalls_available: openbsd? && Pledge.available?,
+          enabled: ENV['MASTER_PLEDGE'] == '1',
           current_mode: @current_mode || :none
         }
       end
-      
-      # Recommended security profile for CLI
+
       def cli_profile
-        paths = {
-          lib: UNVEIL_PATHS[:lib],
-          var: UNVEIL_PATHS[:var],
-          tmp: UNVEIL_PATHS[:tmp]
-        }
-        
-        secure(:network, paths)
         @current_mode = :cli
+        secure(:full)
       end
-      
-      # Recommended security profile for server
+
       def server_profile
-        paths = {
-          lib: UNVEIL_PATHS[:lib],
-          var: UNVEIL_PATHS[:var],
-          tmp: UNVEIL_PATHS[:tmp]
-        }
-        
-        secure(:network, paths)
         @current_mode = :server
+        secure(:network)
       end
-      
-      # Minimal security profile for read-only operations
+
       def readonly_profile
-        paths = {
-          lib: UNVEIL_PATHS[:lib]
-        }
-        
-        secure(:read_only, paths)
         @current_mode = :readonly
+        secure(:read_only, root: { path: MASTER::ROOT, permissions: 'r' })
       end
-      
+
       private
-      
-      # Log security actions
-      def log_security_action(message)
+
+      def log(message)
         return unless ENV['DEBUG'] || ENV['SECURITY_LOG']
-        
-        timestamp = Time.now.strftime('%Y-%m-%d %H:%M:%S')
-        puts "[SECURITY #{timestamp}] #{message}"
+        puts "[security #{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] #{message}"
       end
     end
   end

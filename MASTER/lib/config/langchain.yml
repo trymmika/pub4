@@ -45,7 +45,7 @@ sandbox_requirements:
     readonly_paths:
       - /lib
       - /usr/lib
-      - /home/runner/work/pub4/pub4/lib
+      - ./lib  # application lib, relative to the sandbox root (was a hardcoded CI path)
     writable_paths:
       - /tmp/langchain_sandbox/work
     max_file_size: 10485760  # 10MB

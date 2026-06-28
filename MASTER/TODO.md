@@ -14,19 +14,30 @@
 
 ---
 
+## ✅ Landed on this branch
+- **P0.1** — replaced the fake "Would pledge" logger with real `Pledge` syscall delegation
+  (`lib/pledge.rb`); honest no-op off OpenBSD, opt-in via `MASTER_PLEDGE=1` on-target until the
+  promise set is verified (an incorrect set SIGABRTs the CLI). No more false-confidence logging.
+- **P0.2** — removed hardcoded `/home/runner/...` CI paths; unveil paths now derive from `MASTER::ROOT`;
+  fixed the stray CI path in `config/langchain.yml`.
+- **P2.0 (new)** — defined the missing core constants `MASTER::ROOT`, `LIB`, `CODENAME`, `BOOT_TIME`
+  in `master.rb`. They were referenced across boot/server/replicate/principle/openbsd but defined
+  nowhere → latent `NameError` on every path that touched them.
+
+---
+
 ## P0 — Fake functionality that reports success (FAIL_VISIBLY / false green)
 
-### P0.1 — CLI "security hardening" is a no-op — lib/core/openbsd_pledge.rb
+### P0.1 — CLI "security hardening" is a no-op — lib/core/openbsd_pledge.rb — ✅ done (see above)
 `OpenBSDPledge.pledge`/`.unveil` only **log** `"Would pledge: …"` / `"Would unveil: …"` and never call
 the syscalls (lines 30-58). `Boot.apply_openbsd_security` invokes `OpenBSDPledge.cli_profile`, so the
 CLI claims it is sandboxed while running with **no pledge/unveil at all**. Meanwhile a **real,
 working** implementation exists in `lib/pledge.rb` (Fiddle → libc `pledge(2)`/`unveil(2)`).
 **Fix**: delete the fake module; route boot/server through `lib/pledge.rb`. One pledge implementation.
 
-### P0.2 — Hardcoded GitHub Actions paths baked into config
-`lib/core/openbsd_pledge.rb:16-17` and `lib/config/langchain.yml:48` hardcode
-`/home/runner/work/pub4/pub4/...` (CI runner paths). Even if pledge worked, the unveil paths point at
-a CI sandbox, not the OpenBSD deploy target. **Fix**: derive paths from `MASTER::ROOT`.
+### P0.2 — Hardcoded GitHub Actions paths baked into config — ✅ done (see above)
+> Note: `config/langchain.yml` is also **dead config** — nothing in `lib/` reads it. Either wire it
+> into the langchain sandbox setup or delete it (tracked under P3/SSOT cleanup).
 
 ### P0.3 — "Framework" auto-fixers are placeholders that claim to work
 These report success while doing nothing:

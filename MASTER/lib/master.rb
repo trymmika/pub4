@@ -2,7 +2,11 @@
 
 module MASTER
   VERSION = "3.0.0"
-  def self.root = File.expand_path("..", __dir__)
+  CODENAME = "MASTER"
+  ROOT = File.expand_path("..", __dir__)  # repo root
+  LIB = __dir__                            # lib/ directory (views, templates)
+  BOOT_TIME = Time.now
+  def self.root = ROOT
 end
 
 require_relative "result"
