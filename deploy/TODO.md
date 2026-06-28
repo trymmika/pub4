@@ -79,8 +79,9 @@ database" and openbsd.sh installs no postgres. Result: generated apps boot with 
 server DB. Decide: install/provision PostgreSQL in openbsd.sh, OR switch generators to sqlite3 +
 Solid Queue/Cache/Cable on SQLite. Apply consistently across all apps and the infra script.
 
-### P1.5 — openbsd/README.md has the wrong server IP
-README says primary `46.23.95.45` (lines 109, 178, 181, 218, 314) but the script uses
+### P1.5 — openbsd/README.md has the wrong server IP — ✅ FIXED
+> Resolved: all 5 stale `46.23.95.45` references in the README replaced with `185.52.176.18`.
+README said primary `46.23.95.45` (lines 109, 178, 181, 218, 314) but the script uses
 `185.52.176.18` (openbsd.sh:157). Fix the README to 185.52.176.18 throughout, and update the verify
 commands (`dig @…`, `telnet …`) to match.
 
@@ -157,9 +158,8 @@ Record findings inline per app; convert each gap into a checklist item here.
 (banned). Either reimplement with zsh parameter expansion / `${(s/…/)}` + file rewrite, or delete it
 if its job is already done.
 
-### P4.2 — Remove committed backup duplicate
-`rails/amber/amber_v1_backup.sh` (3044 lines) is a byte-identical-size backup of `amber.sh`. Backups
-belong in git history, not the tree. Delete it.
+### P4.2 — Remove committed backup duplicate — ✅ FIXED
+> Resolved: `rails/amber/amber_v1_backup.sh` removed from the tree (history retains it).
 
 ### P4.3 — Large binary in the tree
 `rails/social_web.pdf` is ~12.9 MB committed to the repo. Confirm it's needed; if it's reference
