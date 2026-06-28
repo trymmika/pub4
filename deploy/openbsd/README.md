@@ -106,7 +106,7 @@ doas zsh openbsd.sh --resume
 
 ## Configuration Details
 ### IP Addresses
-- Primary: `46.23.95.45` (ns.brgen.no)
+- Primary: `185.52.176.18` (ns.brgen.no)
 
 - Secondary: `194.63.248.53` (ns.hyp.net)
 
@@ -175,10 +175,10 @@ Weekly cron job (Monday 2 AM) runs `/usr/local/bin/renew-certs.sh`:
 
 # Verify NSD is authoritative
 
-dig @46.23.95.45 brgen.no SOA +short
+dig @185.52.176.18 brgen.no SOA +short
 
 # Check DNSSEC
-dig @46.23.95.45 brgen.no DNSKEY +short
+dig @185.52.176.18 brgen.no DNSKEY +short
 
 # Test ACME challenge directory
 curl http://brgen.no/.well-known/acme-challenge/test
@@ -215,7 +215,7 @@ curl -I https://amberapp.com
 curl -I https://bsdports.org
 
 # Check SMTP (local only)
-telnet 46.23.95.45 25
+telnet 185.52.176.18 25
 
 # View transaction log
 tail -50 /var/log/openbsd_transactions.log
@@ -311,7 +311,7 @@ nsd-control zonestatus brgen.no
 
 # Test DNS resolution
 
-dig @46.23.95.45 example.com A +short
+dig @185.52.176.18 example.com A +short
 
 # Test HTTP accessibility
 curl http://example.com/.well-known/acme-challenge/test

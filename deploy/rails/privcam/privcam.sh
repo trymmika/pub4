@@ -14,7 +14,7 @@ SERVER_IP="185.52.176.18"
 
 APP_PORT=$((10000 + RANDOM % 10000))
 
-source "${SCRIPT_DIR}/@shared_functions.sh"
+source "${SCRIPT_DIR}/../@shared_functions.sh"
 
 # Idempotency: skip if already generated
 
